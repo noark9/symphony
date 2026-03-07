@@ -91,7 +91,7 @@ Important boundary:
 6. `Agent Runner`
    - Creates workspace.
    - Builds prompt from issue + workflow template.
-   - Launches the coding agent app-server client.
+   - Launches the coding agent ACP client.
    - Streams agent updates back to the orchestrator.
 
 7. `Status Surface` (optional)
@@ -130,7 +130,7 @@ Symphony is easiest to port when kept in these layers:
 - Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
 - Local filesystem for workspaces and logs.
 - Optional workspace population tooling (for example Git CLI, if used).
-- Coding-agent executable that supports JSON-RPC-like app-server mode over stdio.
+- Coding-agent executable that supports JSON-RPC-like Agent Client Protocol (ACP) mode over stdio.
 - Host environment authentication for the issue tracker and coding agent.
 
 ## 4. Core Domain Model
@@ -222,13 +222,13 @@ Fields:
 - `session_id` (string, `<thread_id>-<turn_id>`)
 - `thread_id` (string)
 - `turn_id` (string)
-- `codex_app_server_pid` (string or null)
-- `last_codex_event` (string/enum or null)
-- `last_codex_timestamp` (timestamp or null)
-- `last_codex_message` (summarized payload)
-- `codex_input_tokens` (integer)
-- `codex_output_tokens` (integer)
-- `codex_total_tokens` (integer)
+- `gemini_cli_pid` (string or null)
+- `last_acp_event` (string/enum or null)
+- `last_acp_timestamp` (timestamp or null)
+- `last_acp_message` (summarized payload)
+- `gemini_input_tokens` (integer)
+- `gemini_output_tokens` (integer)
+- `gemini_total_tokens` (integer)
 - `last_reported_input_tokens` (integer)
 - `last_reported_output_tokens` (integer)
 - `last_reported_total_tokens` (integer)
@@ -260,8 +260,8 @@ Fields:
 - `claimed` (set of issue IDs reserved/running/retrying)
 - `retry_attempts` (map `issue_id -> RetryEntry`)
 - `completed` (set of issue IDs; bookkeeping only, not dispatch gating)
-- `codex_totals` (aggregate tokens + runtime seconds)
-- `codex_rate_limits` (latest rate-limit snapshot from agent events)
+- `gemini_totals` (aggregate tokens + runtime seconds)
+- `gemini_rate_limits` (latest rate-limit snapshot from agent events)
 
 ### 4.2 Stable Identifiers and Normalization Rules
 
@@ -323,7 +323,7 @@ Top-level keys:
 - `workspace`
 - `hooks`
 - `agent`
-- `codex`
+- `gemini`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -413,28 +413,14 @@ Fields:
   - State keys are normalized (`trim` + `lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
-#### 5.3.6 `codex` (object)
+#### 5.3.6 `gemini` (object)
 
 Fields:
 
-For Codex-owned config values such as `approval_policy`, `thread_sandbox`, and
-`turn_sandbox_policy`, supported values are defined by the targeted Codex app-server version.
-Implementors should treat them as pass-through Codex config values rather than relying on a
-hand-maintained enum in this spec. To inspect the installed Codex schema, run
-`codex app-server generate-json-schema --out <dir>` and inspect the relevant definitions referenced
-by `v2/ThreadStartParams.json` and `v2/TurnStartParams.json`. Implementations may validate these
-fields locally if they want stricter startup checks.
-
 - `command` (string shell command)
-  - Default: `codex app-server`
+  - Default: `gemini`
   - The runtime launches this command via `bash -lc` in the workspace directory.
-  - The launched process must speak a compatible app-server protocol over stdio.
-- `approval_policy` (Codex `AskForApproval` value)
-  - Default: implementation-defined.
-- `thread_sandbox` (Codex `SandboxMode` value)
-  - Default: implementation-defined.
-- `turn_sandbox_policy` (Codex `SandboxPolicy` value)
-  - Default: implementation-defined.
+  - The launched process must speak standard Agent Client Protocol (ACP) over stdio.
 - `turn_timeout_ms` (integer)
   - Default: `3600000` (1 hour)
 - `read_timeout_ms` (integer)
@@ -509,7 +495,7 @@ Dynamic reload is required:
 - The software should watch `WORKFLOW.md` for changes.
 - On change, it should re-read and re-apply workflow config and prompt template without restart.
 - The software should attempt to adjust live behavior to the new config (for example polling
-  cadence, concurrency limits, active/terminal states, codex settings, workspace paths/hooks, and
+  cadence, concurrency limits, active/terminal states, gemini settings, workspace paths/hooks, and
   prompt content for future runs).
 - Reloaded config applies to future dispatch, retry scheduling, reconciliation decisions, hook
   execution, and agent launches.
@@ -545,36 +531,10 @@ Validation checks:
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
 - `tracker.project_slug` is present when required by the selected tracker kind.
-- `codex.command` is present and non-empty.
-
-### 6.4 Config Fields Summary (Cheat Sheet)
-
-This section is intentionally redundant so a coding agent can implement the config layer quickly.
-
-- `tracker.kind`: string, required, currently `linear`
-- `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, required when `tracker.kind=linear`
-- `tracker.active_states`: list/string, default `Todo, In Progress`
-- `tracker.terminal_states`: list/string, default `Closed, Cancelled, Canceled, Duplicate, Done`
-- `polling.interval_ms`: integer, default `30000`
-- `workspace.root`: path, default `<system-temp>/symphony_workspaces`
-- `hooks.after_create`: shell script or null
-- `hooks.before_run`: shell script or null
-- `hooks.after_run`: shell script or null
-- `hooks.before_remove`: shell script or null
-- `hooks.timeout_ms`: integer, default `60000`
-- `agent.max_concurrent_agents`: integer, default `10`
-- `agent.max_turns`: integer, default `20`
-- `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
-- `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
-- `codex.command`: shell command string, default `codex app-server`
-- `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
-- `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
-- `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
-- `codex.turn_timeout_ms`: integer, default `3600000`
-- `codex.read_timeout_ms`: integer, default `5000`
-- `codex.stall_timeout_ms`: integer, default `300000`
+- `gemini.command`: shell command string, default `gemini`
+- `gemini.turn_timeout_ms`: integer, default `3600000`
+- `gemini.read_timeout_ms`: integer, default `5000`
+- `gemini.stall_timeout_ms`: integer, default `300000`
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
 
@@ -656,7 +616,7 @@ Distinct terminal reasons are important because retry logic and logs differ.
   - Update aggregate runtime totals.
   - Schedule exponential-backoff retry.
 
-- `Codex Update Event`
+- `ACP Update Event`
   - Update live session fields, token counters, and rate limits.
 
 - `Retry Timer Fired`
@@ -766,9 +726,9 @@ Reconciliation runs every tick and has two parts.
 Part A: Stall detection
 
 - For each running issue, compute `elapsed_ms` since:
-  - `last_codex_timestamp` if any event has been seen, else
+  - `last_acp_timestamp` if any event has been seen, else
   - `started_at`
-- If `elapsed_ms > codex.stall_timeout_ms`, terminate the worker and queue a retry.
+- If `elapsed_ms > gemini.stall_timeout_ms`, terminate the worker and queue a retry.
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
 Part B: Tracker state refresh
@@ -887,34 +847,29 @@ Invariant 3: Workspace key is sanitized.
 - Only `[A-Za-z0-9._-]` allowed in workspace directory names.
 - Replace all other characters with `_`.
 
-## 10. Agent Runner Protocol (Coding Agent Integration)
+## 10. Agent Runner Protocol (Gemini CLI Integration)
 
-This section defines the language-neutral contract for integrating a coding agent app-server.
+This section defines the language-neutral contract for integrating the Gemini CLI.
 
 Compatibility profile:
 
-- The normative contract is message ordering, required behaviors, and the logical fields that must
-  be extracted (for example session IDs, completion state, approval handling, and usage/rate-limit
-  telemetry).
-- Exact JSON field names may vary slightly across compatible app-server versions.
-- Implementations should tolerate equivalent payload shapes when they carry the same logical
-  meaning, especially for nested IDs, approval requests, user-input-required signals, and
-  token/rate-limit metadata.
+- The normative contract is message ordering, required behaviors, and the logical fields that must be extracted (for example session IDs, completion state, and usage/rate-limit telemetry).
+- Symphony acts as an **ACP Client**, and the Gemini CLI acts as the **ACP Agent**.
+- Communication happens via line-delimited JSON-RPC over `stdio` conforming to the standard Agent Client Protocol (ACP).
 
 ### 10.1 Launch Contract
 
 Subprocess launch parameters:
 
-- Command: `codex.command`
-- Invocation: `bash -lc <codex.command>`
+- Command: `gemini.command`
+- Invocation: `bash -lc <gemini.command>`
 - Working directory: workspace path
 - Stdout/stderr: separate streams
-- Framing: line-delimited protocol messages on stdout (JSON-RPC-like JSON per line)
+- Framing: line-delimited JSON-RPC messages over stdio (standard ACP)
 
 Notes:
 
-- The default command is `codex app-server`.
-- Approval policy, cwd, and prompt are expressed in the protocol messages in Section 10.2.
+- The default command is `gemini`.
 
 Recommended additional process settings:
 
@@ -922,52 +877,7 @@ Recommended additional process settings:
 
 ### 10.2 Session Startup Handshake
 
-Reference: https://developers.openai.com/codex/app-server/
-
-The client must send these protocol messages in order:
-
-Illustrative startup transcript (equivalent payload shapes are acceptable if they preserve the same
-semantics):
-
-```json
-{"id":1,"method":"initialize","params":{"clientInfo":{"name":"symphony","version":"1.0"},"capabilities":{}}}
-{"method":"initialized","params":{}}
-{"id":2,"method":"thread/start","params":{"approvalPolicy":"<implementation-defined>","sandbox":"<implementation-defined>","cwd":"/abs/workspace"}}
-{"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"<rendered prompt-or-continuation-guidance>"}],"cwd":"/abs/workspace","title":"ABC-123: Example","approvalPolicy":"<implementation-defined>","sandboxPolicy":{"type":"<implementation-defined>"}}}
-```
-
-1. `initialize` request
-   - Params include:
-     - `clientInfo` object (for example `{name, version}`)
-     - `capabilities` object (may be empty)
-   - If the targeted Codex app-server requires capability negotiation for dynamic tools, include the
-     necessary capability flag(s) here.
-   - Wait for response (`read_timeout_ms`)
-2. `initialized` notification
-3. `thread/start` request
-   - Params include:
-     - `approvalPolicy` = implementation-defined session approval policy value
-     - `sandbox` = implementation-defined session sandbox value
-     - `cwd` = absolute workspace path
-     - If optional client-side tools are implemented, include their advertised tool specs using the
-       protocol mechanism supported by the targeted Codex app-server version.
-4. `turn/start` request
-   - Params include:
-     - `threadId`
-     - `input` = single text item containing rendered prompt for the first turn, or continuation
-       guidance for later turns on the same thread
-     - `cwd`
-     - `title` = `<issue.identifier>: <issue.title>`
-     - `approvalPolicy` = implementation-defined turn approval policy value
-     - `sandboxPolicy` = implementation-defined object-form sandbox policy payload when required by
-       the targeted app-server version
-
-Session identifiers:
-
-- Read `thread_id` from `thread/start` result `result.thread.id`
-- Read `turn_id` from each `turn/start` result `result.turn.id`
-- Emit `session_id = "<thread_id>-<turn_id>"`
-- Reuse the same `thread_id` for all continuation turns inside one worker run
+Symphony spawns the `gemini` command as a long-running subprocess in the workspace `cwd`. The client must send standard ACP protocol messages to initialize the session. Symphony acts as an ACP Client and the Gemini CLI acts as the ACP Agent.
 
 ### 10.3 Streaming Turn Processing
 
@@ -975,18 +885,9 @@ The client reads line-delimited messages until the turn terminates.
 
 Completion conditions:
 
-- `turn/completed` -> success
-- `turn/failed` -> failure
-- `turn/cancelled` -> failure
+- ACP completion message -> success
 - turn timeout (`turn_timeout_ms`) -> failure
 - subprocess exit -> failure
-
-Continuation processing:
-
-- If the worker decides to continue after a successful turn, it should issue another `turn/start`
-  on the same live `threadId`.
-- The app-server subprocess should remain alive across those continuation turns and be stopped only
-  when the worker run is ending.
 
 Line handling requirements:
 
@@ -999,12 +900,11 @@ Line handling requirements:
 
 ### 10.4 Emitted Runtime Events (Upstream to Orchestrator)
 
-The app-server client emits structured events to the orchestrator callback. Each event should
-include:
+The ACP client emits structured events to the orchestrator callback. Each event should include:
 
 - `event` (enum/string)
 - `timestamp` (UTC timestamp)
-- `codex_app_server_pid` (if available)
+- `gemini_cli_pid` (if available)
 - optional `usage` map (token counts)
 - payload fields as needed
 
@@ -1016,51 +916,24 @@ Important emitted events may include:
 - `turn_failed`
 - `turn_cancelled`
 - `turn_ended_with_error`
-- `turn_input_required`
-- `approval_auto_approved`
 - `unsupported_tool_call`
 - `notification`
 - `other_message`
 - `malformed`
 
-### 10.5 Approval, Tool Calls, and User Input Policy
+### 10.5 Tool Calls
 
-Approval, sandbox, and user-input behavior is implementation-defined.
-
-Policy requirements:
-
-- Each implementation should document its chosen approval, sandbox, and operator-confirmation
-  posture.
-- Approval requests and user-input-required events must not leave a run stalled indefinitely. An
-  implementation should either satisfy them, surface them to an operator, auto-resolve them, or
-  fail the run according to its documented policy.
-
-Example high-trust behavior:
-
-- Auto-approve command execution approvals for the session.
-- Auto-approve file-change approvals for the session.
-- Treat user-input-required turns as hard failure.
-
-Unsupported dynamic tool calls:
-
-- Supported dynamic tool calls that are explicitly implemented and advertised by the runtime should
-  be handled according to their extension contract.
-- If the agent requests a dynamic tool call (`item/tool/call`) that is not supported, return a tool
-  failure response and continue the session.
-- This prevents the session from stalling on unsupported tool execution paths.
+Dynamic tool calls (like the optional `linear_graphql` extension) will be requested by the Gemini CLI via ACP tool call messages, intercepted and executed by the Symphony orchestrator, and returned via ACP tool response messages.
 
 Optional client-side tool extension:
 
-- An implementation may expose a limited set of client-side tools to the app-server session.
+- An implementation may expose a limited set of client-side tools to the session.
 - Current optional standardized tool: `linear_graphql`.
-- If implemented, supported tools should be advertised to the app-server session during startup
-  using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names should still return a failure result and continue the session.
 
 `linear_graphql` extension contract:
 
-- Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured
-  tracker auth for the current session.
+- Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured tracker auth for the current session.
 - Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
 - Preferred input shape:
 
@@ -1080,41 +953,24 @@ Optional client-side tool extension:
 - Execute one GraphQL operation per tool call.
 - If the provided document contains multiple operations, reject the tool call as invalid input.
 - `operationName` selection is intentionally out of scope for this extension.
-- Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config; do
-  not require the coding agent to read raw tokens from disk.
+- Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config; do not require the coding agent to read raw tokens from disk.
 - Tool result semantics:
   - transport success + no top-level GraphQL `errors` -> `success=true`
-  - top-level GraphQL `errors` present -> `success=false`, but preserve the GraphQL response body
-    for debugging
+  - top-level GraphQL `errors` present -> `success=false`, but preserve the GraphQL response body for debugging
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
-- Return the GraphQL response or error payload as structured tool output that the model can inspect
-  in-session.
-
-Illustrative responses (equivalent payload shapes are acceptable if they preserve the same outcome):
-
-```json
-{"id":"<approval-id>","result":{"approved":true}}
-{"id":"<tool-call-id>","result":{"success":false,"error":"unsupported_tool_call"}}
-```
-
-Hard failure on user input requirement:
-
-- If the agent requests user input, fail the run attempt immediately.
-- The client detects this via:
-  - explicit method (`item/tool/requestUserInput`), or
-  - turn methods/flags indicating input is required.
+- Return the GraphQL response or error payload as structured tool output via ACP tool response message.
 
 ### 10.6 Timeouts and Error Mapping
 
 Timeouts:
 
-- `codex.read_timeout_ms`: request/response timeout during startup and sync requests
-- `codex.turn_timeout_ms`: total turn stream timeout
-- `codex.stall_timeout_ms`: enforced by orchestrator based on event inactivity
+- `gemini.read_timeout_ms`: request/response timeout during startup and sync requests
+- `gemini.turn_timeout_ms`: total turn stream timeout
+- `gemini.stall_timeout_ms`: enforced by orchestrator based on event inactivity
 
 Error mapping (recommended normalized categories):
 
-- `codex_not_found`
+- `gemini_not_found`
 - `invalid_workspace_cwd`
 - `response_timeout`
 - `turn_timeout`
@@ -1122,25 +978,25 @@ Error mapping (recommended normalized categories):
 - `response_error`
 - `turn_failed`
 - `turn_cancelled`
-- `turn_input_required`
 
 ### 10.7 Agent Runner Contract
 
-The `Agent Runner` wraps workspace + prompt + app-server client.
+The `Agent Runner` wraps workspace + prompt + ACP client.
 
 Behavior:
 
 1. Create/reuse workspace for issue.
 2. Build prompt from workflow template.
-3. Start app-server session.
-4. Forward app-server events to orchestrator.
+3. Start ACP session with Gemini CLI.
+4. Forward ACP events to orchestrator.
 5. On any error, fail the worker attempt (the orchestrator will retry).
 
 Note:
 
 - Workspaces are intentionally preserved after successful runs.
 
-## 11. Issue Tracker Integration Contract (Linear-Compatible)
+## 11. Issue Tracker Integration Contract
+ (Linear-Compatible)
 
 ### 11.1 Required Operations
 
@@ -1291,7 +1147,7 @@ should return:
 - `running` (list of running session rows)
 - each running row should include `turn_count`
 - `retrying` (list of retry queue rows)
-- `codex_totals`
+- `gemini_totals`
   - `input_tokens`
   - `output_tokens`
   - `total_tokens`
@@ -1429,7 +1285,7 @@ Minimum endpoints:
           "error": "no available orchestrator slots"
         }
       ],
-      "codex_totals": {
+      "gemini_totals": {
         "input_tokens": 5000,
         "output_tokens": 2400,
         "total_tokens": 7400,
@@ -1472,10 +1328,10 @@ Minimum endpoints:
       },
       "retry": null,
       "logs": {
-        "codex_session_logs": [
+        "gemini_session_logs": [
           {
             "label": "latest",
-            "path": "/var/log/symphony/codex/MT-649/latest.log",
+            "path": "/var/log/symphony/gemini/MT-649/latest.log",
             "url": null
           }
         ]
@@ -1649,7 +1505,7 @@ Implications:
 
 ### 15.5 Harness Hardening Guidance
 
-Running Codex agents against repositories, issue trackers, and other inputs that may contain
+Running Gemini agents against repositories, issue trackers, and other inputs that may contain
 sensitive data or externally-controlled content can be dangerous. A permissive deployment can lead
 to data leaks, destructive mutations, or full machine compromise if the agent is induced to execute
 harmful commands or use overly-powerful integrations.
@@ -1661,10 +1517,9 @@ fully trustworthy just because they originate inside a normal workflow.
 
 Possible hardening measures include:
 
-- Tightening Codex approval and sandbox settings described elsewhere in this specification instead
-  of running with a maximally permissive configuration.
+- Tightening OS-level and workspace permissions instead of running with a maximally permissive configuration.
 - Adding external isolation layers such as OS/container/VM sandboxing, network restrictions, or
-  separate credentials beyond the built-in Codex policy controls.
+  separate credentials beyond the built-in Gemini policy controls.
 - Filtering which Linear issues, projects, teams, labels, or other tracker sources are eligible for
   dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
 - Narrowing the optional `linear_graphql` tool so it can only read or mutate data inside the
@@ -1692,8 +1547,8 @@ function start_service():
     claimed: set(),
     retry_attempts: {},
     completed: set(),
-    codex_totals: {input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
-    codex_rate_limits: null
+    gemini_totals: {input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+    gemini_rate_limits: null
   }
 
   validation = validate_dispatch_config()
@@ -1785,13 +1640,13 @@ function dispatch_issue(issue, state, attempt):
     identifier: issue.identifier,
     issue,
     session_id: null,
-    codex_app_server_pid: null,
-    last_codex_message: null,
-    last_codex_event: null,
-    last_codex_timestamp: null,
-    codex_input_tokens: 0,
-    codex_output_tokens: 0,
-    codex_total_tokens: 0,
+    gemini_cli_pid: null,
+    last_acp_message: null,
+    last_acp_event: null,
+    last_acp_timestamp: null,
+    gemini_input_tokens: 0,
+    gemini_output_tokens: 0,
+    gemini_total_tokens: 0,
     last_reported_input_tokens: 0,
     last_reported_output_tokens: 0,
     last_reported_total_tokens: 0,
@@ -1815,7 +1670,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   if run_hook("before_run", workspace.path) failed:
     fail_worker("before_run hook error")
 
-  session = app_server.start_session(workspace=workspace.path)
+  session = acp_client.start_session(workspace=workspace.path)
   if session failed:
     run_hook_best_effort("after_run", workspace.path)
     fail_worker("agent session startup error")
@@ -1826,25 +1681,25 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   while true:
     prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns)
     if prompt failed:
-      app_server.stop_session(session)
+      acp_client.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("prompt error")
 
-    turn_result = app_server.run_turn(
+    turn_result = acp_client.run_turn(
       session=session,
       prompt=prompt,
       issue=issue,
-      on_message=(msg) -> send(orchestrator_channel, {codex_update, issue.id, msg})
+      on_message=(msg) -> send(orchestrator_channel, {gemini_update, issue.id, msg})
     )
 
     if turn_result failed:
-      app_server.stop_session(session)
+      acp_client.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("agent turn error")
 
     refreshed_issue = tracker.fetch_issue_states_by_ids([issue.id])
     if refreshed_issue failed:
-      app_server.stop_session(session)
+      acp_client.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
       fail_worker("issue state refresh error")
 
@@ -1858,7 +1713,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
 
     turn_number = turn_number + 1
 
-  app_server.stop_session(session)
+  acp_client.stop_session(session)
   run_hook_best_effort("after_run", workspace.path)
 
   exit_normal()
@@ -1946,7 +1801,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `tracker.api_key` works (including `$VAR` indirection)
 - `$VAR` resolution works for tracker API key and path values
 - `~` path expansion works
-- `codex.command` is preserved as a shell command string
+- `gemini.command` is preserved as a shell command string
 - Per-state concurrency override map normalizes state names and ignores invalid values
 - Prompt template renders `issue` and `attempt`
 - Prompt rendering fails on unknown variables (strict mode)
@@ -1998,14 +1853,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   limits
 - If a snapshot API is implemented, timeout/unavailable cases are surfaced
 
-### 17.5 Coding-Agent App-Server Client
+### 17.5 Gemini CLI ACP Client
 
-- Launch command uses workspace cwd and invokes `bash -lc <codex.command>`
-- Startup handshake sends `initialize`, `initialized`, `thread/start`, `turn/start`
-- `initialize` includes client identity/capabilities payload required by the targeted Codex
-  app-server protocol
-- Policy-related startup payloads use the implementation's documented approval/sandbox settings
-- `thread/start` and `turn/start` parse nested IDs and emit `session_started`
+- Launch command uses workspace cwd and invokes `bash -lc <gemini.command>`
 - Request/response read timeout is enforced
 - Turn timeout is enforced
 - Partial JSON lines are buffered until newline
@@ -2019,7 +1869,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Compatible payload variants for approvals, user-input-required signals, and usage/rate-limit
   telemetry are accepted when they preserve the same logical meaning
 - If optional client-side tools are implemented, the startup handshake advertises the supported tool
-  specs required for discovery by the targeted app-server version
+  specs required for discovery by the targeted Gemini CLI version
 - If the optional `linear_graphql` client-side tool extension is implemented:
   - the tool is advertised to the session
   - valid `query` / `variables` inputs execute against configured Linear auth
@@ -2079,8 +1929,8 @@ Use the same validation profiles as Section 17:
 - Workspace manager with sanitized per-issue workspaces
 - Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
-- Coding-agent app-server subprocess client with JSON line protocol
-- Codex launch command config (`codex.command`, default `codex app-server`)
+- Coding-agent ACP subprocess client with JSON line protocol
+- Gemini launch command config (`gemini.command`, default `gemini`)
 - Strict prompt rendering with `issue` and `attempt` variables
 - Exponential retry queue with continuation retries after normal exit
 - Configurable retry backoff cap (`agent.max_retry_backoff_ms`, default 5m)
@@ -2094,7 +1944,7 @@ Use the same validation profiles as Section 17:
 - Optional HTTP server honors CLI `--port` over `server.port`, uses a safe default bind host, and
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
 - Optional `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
-  app-server session using configured Symphony auth.
+  ACP session using configured Symphony auth.
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
