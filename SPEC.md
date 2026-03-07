@@ -1517,8 +1517,7 @@ fully trustworthy just because they originate inside a normal workflow.
 
 Possible hardening measures include:
 
-- Tightening Gemini approval and sandbox settings described elsewhere in this specification instead
-  of running with a maximally permissive configuration.
+- Tightening OS-level and workspace permissions instead of running with a maximally permissive configuration.
 - Adding external isolation layers such as OS/container/VM sandboxing, network restrictions, or
   separate credentials beyond the built-in Gemini policy controls.
 - Filtering which Linear issues, projects, teams, labels, or other tracker sources are eligible for
