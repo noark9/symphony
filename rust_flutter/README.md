@@ -242,3 +242,39 @@ flutter run -d chrome
 3. Open the browser to the provided localhost URL (e.g., `http://localhost:port`).
 4. You should see the Symphony Dashboard UI.
 5. If the backend is running properly, the dashboard will auto-poll the `http://localhost:3000/api/v1/state` endpoint every 5 seconds and populate the overview cards and lists with the current state (counts, running sessions, retry queue, and Gemini token totals). You can also click the manual refresh icon in the app bar to force an immediate update.
+
+## Workspace Hooks & Lifecycle Execution
+
+The Symphony execution engine supports running custom shell commands (hooks) during the workspace lifecycle. These are configured in the `hooks` section of `WORKFLOW.md`.
+
+### Configuration
+```yaml
+hooks:
+  after_create: "./setup.sh"
+  before_run: "echo 'Preparing to run'"
+  after_run: "echo 'Run finished'"
+  before_remove: "rm -rf tmp/"
+  timeout_ms: 10000
+```
+
+### Hook Behavior
+- **`after_create`** and **`before_run`**: The orchestration process will **abort immediately** if either of these hooks return a non-zero exit code or timeout.
+- **`after_run`** and **`before_remove`**: Failures and timeouts from these hooks are logged but **ignored** (they will not crash the lifecycle or trigger retries).
+- **`timeout_ms`**: Enforces a strict upper bound using Tokio's timeout utilities. The default is `30000` ms (30 seconds).
+
+### Writing a Local Test Script
+You can create simple test scripts in your workspace root to verify the hook failures.
+For example, create a file named `fail.sh`:
+
+```bash
+#!/bin/bash
+echo "This hook will fail"
+exit 1
+```
+
+Make it executable (`chmod +x fail.sh`) and configure your `WORKFLOW.md` to trigger it:
+```yaml
+hooks:
+  after_create: "./fail.sh"
+```
+When the orchestrator creates a workspace and triggers this hook, the operation will be aborted.

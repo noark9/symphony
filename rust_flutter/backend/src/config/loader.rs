@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowConfig {
     #[serde(default)]
+    pub hooks: HooksConfig,
+    #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub tracker: TrackerConfig,
@@ -27,6 +29,7 @@ impl Default for WorkflowConfig {
             polling: PollingConfig::default(),
             workspace: WorkspaceConfig::default(),
             agent: AgentConfig::default(),
+            hooks: HooksConfig::default(),
             gemini: GeminiConfig::default(),
         }
     }
@@ -261,6 +264,32 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             port: default_server_port(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HooksConfig {
+    pub after_create: Option<String>,
+    pub before_run: Option<String>,
+    pub after_run: Option<String>,
+    pub before_remove: Option<String>,
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_hook_timeout_ms() -> u64 {
+    30000
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            after_create: None,
+            before_run: None,
+            after_run: None,
+            before_remove: None,
+            timeout_ms: default_hook_timeout_ms(),
         }
     }
 }
