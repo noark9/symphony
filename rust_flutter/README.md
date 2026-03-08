@@ -146,3 +146,25 @@ The unit test `test_run_agent_json_stdout` sets up a mock subprocess that acts l
 cd backend
 cargo test execution::runner
 ```
+
+## Orchestrator Engine
+
+The Orchestrator Engine (`backend/src/orchestrator/engine.rs`) manages the concurrency, reliability, and execution state of issues as they are processed by the agents.
+
+### Core Logic
+
+- **State Tracking:** Tracks issues currently in `running` and `claimed` sets to enforce idempotency and avoid duplicate agent spawns.
+- **Poll Loop:** Reconciles active runs, sorts candidate issues fetched from the tracker (based on priority and date), and dispatches up to the `max_concurrent_agents` limit.
+- **Stall Detection:** Checks if any active session has exceeded the `gemini.stall_timeout_ms` threshold. Stalled sessions are automatically transitioned.
+- **Retry Logic:**
+  - Normal Exits: Retries cleanly after 1000ms.
+  - Abnormal Exits: Applies an exponential backoff strategy, capped at a configured `max_retry_backoff_ms`.
+
+### Testing the Orchestrator Engine
+
+To run the unit tests specifically for the Orchestrator Engine (verifying state transitions, idempotency checks, backoff algorithms, and polling loop mechanics), use the following command:
+
+```bash
+cd backend
+cargo test orchestrator::engine
+```
