@@ -10,3 +10,6 @@ regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = { version = "1.50.0", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3.26.0"

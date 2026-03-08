@@ -74,3 +74,45 @@ To run the unit tests specifically for the config parsing and default value fall
 cd backend
 cargo test config::loader
 ```
+
+## Obsidian Tracker Implementation
+
+The Symphony backend integrates with Obsidian as a local task tracker. It parses markdown files within an Obsidian vault directory to extract issue metadata from YAML frontmatter and convert them into core `Issue` models.
+
+The tracker implementation (`backend/src/tracker/obsidian.rs`) provides the `fetch_candidate_issues` function which:
+- Scans a provided `vault_dir` path for `.md` files.
+- Checks that the file contains valid YAML frontmatter.
+- Extracts properties like `status`, `priority`, and `labels`.
+- Filters the issues based on provided `active_states` (e.g., `["todo", "in-progress"]`).
+- Uses the markdown file's name (without the `.md` extension) as the Issue `identifier` and `id`.
+- Emits custom errors (`MissingYamlFrontmatter`, `MalformedYamlFrontmatter`, `FileSystemError`) without crashing the application when invalid files are encountered.
+
+### Testing the Obsidian Tracker
+
+You can manually verify the parsing behavior by creating a dummy local vault directory:
+
+1. **Create a dummy vault:**
+   ```bash
+   mkdir -p /tmp/dummy_vault
+   ```
+2. **Add a sample issue markdown file:**
+   ```bash
+   cat << 'FILE_EOF' > /tmp/dummy_vault/ISSUE-100.md
+   ---
+   status: todo
+   priority: high
+   labels:
+     - feature
+     - backend
+   ---
+
+   This is a description of the dummy issue.
+   FILE_EOF
+   ```
+
+To run the unit tests specifically for the Obsidian Tracker logic (which automatically sets up an isolated temporary vault), run the following command:
+
+```bash
+cd backend
+cargo test tracker::obsidian
+```
