@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowConfig {
     #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
     pub tracker: TrackerConfig,
     #[serde(default)]
     pub polling: PollingConfig,
@@ -21,6 +23,7 @@ impl Default for WorkflowConfig {
     fn default() -> Self {
         Self {
             tracker: TrackerConfig::default(),
+            server: ServerConfig::default(),
             polling: PollingConfig::default(),
             workspace: WorkspaceConfig::default(),
             agent: AgentConfig::default(),
@@ -196,6 +199,8 @@ agent:
   model: gemini-pro
 gemini:
   api_key_env: MY_API_KEY
+server:
+  port: 8080
 ---
 # Workflow description
 This is the workflow."#;
@@ -209,6 +214,7 @@ This is the workflow."#;
         assert_eq!(doc.config.workspace.root, "/tmp/workspace".to_string());
         assert_eq!(doc.config.agent.model, Some("gemini-pro".to_string()));
         assert_eq!(doc.config.gemini.api_key_env, Some("MY_API_KEY".to_string()));
+        assert_eq!(doc.config.server.port, 8080);
 
         assert_eq!(doc.markdown_body, "# Workflow description\nThis is the workflow.");
     }
@@ -222,6 +228,7 @@ This is the workflow."#;
         assert_eq!(doc.config.polling.interval_ms, 30000);
         assert!(doc.config.workspace.root.ends_with(".symphony/workspace"));
         assert_eq!(doc.config.tracker.kind, None);
+        assert_eq!(doc.config.server.port, 3000);
         assert_eq!(doc.markdown_body, "Some body content.");
     }
 
@@ -237,5 +244,23 @@ This is the workflow."#;
         unsafe { env::set_var("TEST_VAR", "test_val"); }
         let expanded = expand_path("/path/to/${TEST_VAR}/end");
         assert_eq!(expanded, "/path/to/test_val/end");
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerConfig {
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+}
+
+fn default_server_port() -> u16 {
+    3000
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            port: default_server_port(),
+        }
     }
 }

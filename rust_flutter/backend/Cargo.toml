@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = "0.8.8"
 chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4.5.60", features = ["derive"] }
 dirs = "6.0.0"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -12,6 +14,7 @@ serde_json = "1.0.149"
 serde_yaml = "0.9.34"
 tokio = { version = "1.50.0", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
+tower-http = { version = "0.6.8", features = ["cors"] }
 
 [dev-dependencies]
 tempfile = "3.26.0"

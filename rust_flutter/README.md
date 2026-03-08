@@ -168,3 +168,47 @@ To run the unit tests specifically for the Orchestrator Engine (verifying state 
 cd backend
 cargo test orchestrator::engine
 ```
+
+## Running the HTTP API Server
+
+The Symphony automation service optionally exposes an HTTP API using `axum` on the port defined in the `WORKFLOW.md` config or via the CLI.
+
+To start the backend server locally, run:
+
+```bash
+cd backend
+cargo run
+```
+
+You can optionally override the port using the `-p` or `--port` flag:
+
+```bash
+cargo run -- --port 8080
+```
+
+### API Endpoints
+
+Once the server is running, you can interact with the following API endpoints using `curl` or any HTTP client.
+
+**1. Get State:**
+Returns JSON with current counts, running sessions, the retry queue, and Gemini token totals.
+
+```bash
+curl http://localhost:3000/api/v1/state
+```
+
+**2. Get Issue Status:**
+Returns detailed session logs and status for a specific issue identifier.
+
+```bash
+curl http://localhost:3000/api/v1/ISSUE-123
+```
+
+**3. Trigger Refresh:**
+Forces an immediate orchestrator tick to poll for new tasks.
+
+```bash
+curl -X POST http://localhost:3000/api/v1/refresh
+```
+
+The API supports CORS and is ready to be consumed by the Flutter Web frontend.
