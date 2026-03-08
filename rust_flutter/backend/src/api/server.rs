@@ -15,7 +15,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/state", get(get_state))
         .route("/api/v1/refresh", post(trigger_refresh))
-        .route("/api/v1/:issue_identifier", get(get_issue_status))
+        .route("/api/v1/{issue_identifier}", get(get_issue_status))
         .layer(cors)
         .with_state(state)
 }

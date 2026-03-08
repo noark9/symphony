@@ -212,3 +212,33 @@ curl -X POST http://localhost:3000/api/v1/refresh
 ```
 
 The API supports CORS and is ready to be consumed by the Flutter Web frontend.
+
+## Frontend Setup
+
+The Symphony web dashboard is built using Flutter and is located in the `frontend` directory. It uses `flutter_bloc` for state management and polls the Rust backend's REST API.
+
+### Installing Dependencies
+
+Before running the dashboard, navigate to the `frontend` directory and install the required dependencies:
+
+```bash
+cd frontend
+flutter pub get
+```
+
+### Running the Web Dashboard Locally
+
+To run the Flutter dashboard in Chrome for development and testing:
+
+```bash
+cd frontend
+flutter run -d chrome
+```
+
+### Verifying the Connection
+
+1. Ensure the Rust backend is running (`cd backend && cargo run`). By default, it will start on `http://0.0.0.0:3000`.
+2. Start the Flutter frontend (`flutter run -d chrome`).
+3. Open the browser to the provided localhost URL (e.g., `http://localhost:port`).
+4. You should see the Symphony Dashboard UI.
+5. If the backend is running properly, the dashboard will auto-poll the `http://localhost:3000/api/v1/state` endpoint every 5 seconds and populate the overview cards and lists with the current state (counts, running sessions, retry queue, and Gemini token totals). You can also click the manual refresh icon in the app bar to force an immediate update.
