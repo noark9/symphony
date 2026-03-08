@@ -34,3 +34,43 @@ To run the unit tests (which include instantiation tests for the domain models),
 cd backend
 cargo test
 ```
+
+## Configuration Loader
+
+The Symphony backend includes a Configuration Loader that parses a `WORKFLOW.md` file containing YAML front matter.
+This configuration governs how the orchestrator tracks issues, polls for updates, manages the workspace, and configures the agent.
+
+### Example `WORKFLOW.md`
+
+```yaml
+---
+tracker:
+  kind: obsidian
+  vault_path: ~/my_vault
+  issues_folder: ~/my_vault/issues
+polling:
+  interval_ms: 10000
+workspace:
+  root: /tmp/workspace
+agent:
+  model: gemini-pro
+gemini:
+  api_key_env: MY_API_KEY
+---
+
+# Workflow Contract
+
+This document describes the workflow.
+```
+
+The loader expands `~` to the user's home directory and `$VAR` or `${VAR}` to environment variables in path configurations.
+If no values are specified, it applies fallback defaults, such as `30000` for `interval_ms` and `~/.symphony/workspace` for the workspace root.
+
+### Testing the Configuration Loader
+
+To run the unit tests specifically for the config parsing and default value fallbacks, use the following command:
+
+```bash
+cd backend
+cargo test config::loader
+```
