@@ -8,8 +8,10 @@ chrono = { version = "0.4.44", features = ["serde"] }
 dirs = "6.0.0"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 serde_yaml = "0.9.34"
 tokio = { version = "1.50.0", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
 
 [dev-dependencies]
 tempfile = "3.26.0"

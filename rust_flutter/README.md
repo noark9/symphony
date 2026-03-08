@@ -116,3 +116,33 @@ To run the unit tests specifically for the Obsidian Tracker logic (which automat
 cd backend
 cargo test tracker::obsidian
 ```
+
+## Workspace Manager & ACP Agent Runner
+
+The Symphony backend execution engine manages isolated per-issue directories and handles running agents via standard Agent Client Protocol (ACP) over stdio.
+
+### Workspace Manager
+
+The `WorkspaceManager` (`backend/src/execution/workspace.rs`) is responsible for managing isolated per-issue directories inside the configured workspace root (e.g., `~/.symphony/workspace`).
+It sanitizes issue identifiers to allow only `[A-Za-z0-9._-]` characters, mapping a tracker issue ID like `ISSUE-123!` to a valid directory name like `ISSUE-123_`.
+
+**Testing Path Sanitization & Creation:**
+You can verify the path sanitization and workspace creation logic by running the unit tests:
+```bash
+cd backend
+cargo test execution::workspace
+```
+
+### ACP Agent Runner
+
+The `AgentRunner` (`backend/src/execution/runner.rs`) uses `tokio::process::Command` to spawn the agent.
+It executes `bash -lc <gemini.command>`, strictly setting the subprocess working directory to the isolated workspace path provided by the Workspace Manager.
+
+It implements line-delimited JSON-RPC over `stdio`, parsing standard output (`stdout`) as JSON (the ACP standard) while safely capturing standard error (`stderr`) strictly for logging.
+
+**Testing the ACP Runner:**
+The unit test `test_run_agent_json_stdout` sets up a mock subprocess that acts like an agent. The mock script outputs `{"jsonrpc": "2.0", "method": "test"}` to stdout and some debug info to stderr. You can verify it accurately parses the stdout JSON and handles the subprocess properly:
+```bash
+cd backend
+cargo test execution::runner
+```
