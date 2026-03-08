@@ -7,7 +7,7 @@ Purpose: Define a service that orchestrates coding agents to get project work do
 ## 1. Problem Statement
 
 Symphony is a long-running automation service that continuously reads work from an issue tracker
-(Linear in this specification version), creates an isolated workspace for each issue, and runs a
+(Obsidian local vault in this specification version), creates an isolated workspace for each issue, and runs a
 coding agent session for that issue inside the workspace.
 
 The service solves four operational problems:
@@ -119,7 +119,7 @@ Symphony is easiest to port when kept in these layers:
 4. `Execution Layer` (workspace + agent subprocess)
    - Filesystem lifecycle, workspace preparation, coding-agent protocol.
 
-5. `Integration Layer` (Linear adapter)
+5. `Integration Layer` (Obsidian adapter)
    - API calls and normalization for tracker data.
 
 6. `Observability Layer` (logs + optional status surface)
@@ -127,11 +127,11 @@ Symphony is easiest to port when kept in these layers:
 
 ### 3.3 External Dependencies
 
-- Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
+- Local file system reads and YAML frontmatter parsing (Obsidian for `tracker.kind: obsidian` in this specification version).
 - Local filesystem for workspaces and logs.
 - Optional workspace population tooling (for example Git CLI, if used).
 - Coding-agent executable that supports JSON-RPC-like Agent Client Protocol (ACP) mode over stdio.
-- Host environment authentication for the issue tracker and coding agent.
+- Host environment authentication for the coding agent.
 
 ## 4. Core Domain Model
 
@@ -342,16 +342,12 @@ Fields:
 
 - `kind` (string)
   - Required for dispatch.
-  - Current supported value: `linear`
-- `endpoint` (string)
-  - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
-- `api_key` (string)
-  - May be a literal token or `$VAR_NAME`.
-  - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
-  - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
-- `project_slug` (string)
-  - Required for dispatch when `tracker.kind == "linear"`.
+  - Current supported value: `obsidian`
+- `vault_dir` (string)
+  - Absolute or relative path to the specific Obsidian folder containing the issues.
+  - Required for dispatch when `tracker.kind == "obsidian"`.
 - `active_states` (list of strings or comma-separated string)
+  - Maps to the `status` or `state` field in the Markdown file's YAML frontmatter.
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings or comma-separated string)
   - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
@@ -450,7 +446,7 @@ Template input variables:
 Fallback prompt behavior:
 
 - If the workflow prompt body is empty, the runtime may use a minimal default prompt
-  (`You are working on an issue from Linear.`).
+  (`You are working on an issue from Obsidian.`).
 - Workflow file read/parse failures are configuration/validation errors and should not silently fall
   back to a prompt.
 
@@ -529,14 +525,33 @@ Validation checks:
 
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
-- `tracker.api_key` is present after `$` resolution.
-- `tracker.project_slug` is present when required by the selected tracker kind.
+- `tracker.vault_dir` is present when required by the selected tracker kind.
 - `gemini.command`: shell command string, default `gemini`
 - `gemini.turn_timeout_ms`: integer, default `3600000`
 - `gemini.read_timeout_ms`: integer, default `5000`
 - `gemini.stall_timeout_ms`: integer, default `300000`
 - `server.port` (extension): integer, optional; enables the optional HTTP server, `0` may be used
   for ephemeral local bind, and CLI `--port` overrides it
+
+### 6.4 Config Fields Summary (Cheat Sheet)
+
+This section is intentionally redundant so a coding agent can implement the config layer quickly.
+
+- `tracker.kind`: string, required, currently `obsidian`
+- `tracker.vault_dir`: string, path to Obsidian vault, required when `tracker.kind=obsidian`
+- `tracker.active_states`: list/string, default `Todo, In Progress`, maps to YAML frontmatter field
+- `tracker.terminal_states`: list/string, default `Closed, Cancelled, Canceled, Duplicate, Done`
+- `polling.interval_ms`: integer, default `30000`
+- `workspace.root`: path, default `<system-temp>/symphony_workspaces`
+- `hooks.after_create`: shell script or null
+- `hooks.before_run`: shell script or null
+- `hooks.after_run`: shell script or null
+- `hooks.before_remove`: shell script or null
+- `hooks.timeout_ms`: integer, default `60000`
+- `agent.max_concurrent_agents`: integer, default `10`
+- `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
+- `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
+- `gemini.command`: shell command string, default `gemini`
 
 ## 7. Orchestration State Machine
 
@@ -923,43 +938,36 @@ Important emitted events may include:
 
 ### 10.5 Tool Calls
 
-Dynamic tool calls (like the optional `linear_graphql` extension) will be requested by the Gemini CLI via ACP tool call messages, intercepted and executed by the Symphony orchestrator, and returned via ACP tool response messages.
+Dynamic tool calls (like the optional `obsidian_markdown_updater` extension) will be requested by the Gemini CLI via ACP tool call messages, intercepted and executed by the Symphony orchestrator, and returned via ACP tool response messages.
 
 Optional client-side tool extension:
 
 - An implementation may expose a limited set of client-side tools to the session.
-- Current optional standardized tool: `linear_graphql`.
+- Current optional standardized tool: `obsidian_markdown_updater`.
 - Unsupported tool names should still return a failure result and continue the session.
 
-`linear_graphql` extension contract:
+`obsidian_markdown_updater` extension contract:
 
-- Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured tracker auth for the current session.
-- Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
+- Purpose: execute a raw file overwrite or targeted YAML frontmatter update on the issue's Markdown file to transition its state or append comments.
+- Availability: only meaningful when `tracker.kind == "obsidian"`.
 - Preferred input shape:
 
   ```json
   {
-    "query": "single GraphQL query or mutation document",
-    "variables": {
-      "optional": "graphql variables object"
-    }
+    "issue_identifier": "ABC-123",
+    "new_state": "Done",
+    "content_append": "Fixed in PR #42"
   }
   ```
 
-- `query` must be a non-empty string.
-- `query` must contain exactly one GraphQL operation.
-- `variables` is optional and, when present, must be a JSON object.
-- Implementations may additionally accept a raw GraphQL query string as shorthand input.
-- Execute one GraphQL operation per tool call.
-- If the provided document contains multiple operations, reject the tool call as invalid input.
-- `operationName` selection is intentionally out of scope for this extension.
-- Reuse the configured Linear endpoint and auth from the active Symphony workflow/runtime config; do not require the coding agent to read raw tokens from disk.
+- `issue_identifier` must be a non-empty string identifying the target Markdown file.
+- `new_state` is optional, representing the new status to update in the YAML frontmatter.
+- `content_append` is optional, representing content to append to the end of the Markdown file.
+- Execute the file system update using Symphony's configured `vault_dir`.
 - Tool result semantics:
-  - transport success + no top-level GraphQL `errors` -> `success=true`
-  - top-level GraphQL `errors` present -> `success=false`, but preserve the GraphQL response body for debugging
-  - invalid input, missing auth, or transport failure -> `success=false` with an error payload
-- Return the GraphQL response or error payload as structured tool output via ACP tool response message.
-
+  - file read/write success -> `success=true`
+  - file system error (e.g., file not found, permission denied) -> `success=false` with an error payload
+- Return the update result or error payload as structured tool output via ACP tool response message.
 ### 10.6 Timeouts and Error Mapping
 
 Timeouts:
@@ -996,14 +1004,14 @@ Note:
 - Workspaces are intentionally preserved after successful runs.
 
 ## 11. Issue Tracker Integration Contract
- (Linear-Compatible)
+ (Obsidian-Compatible)
 
 ### 11.1 Required Operations
 
 An implementation must support these tracker adapter operations:
 
 1. `fetch_candidate_issues()`
-   - Return issues in configured active states for a configured project.
+   - Return issues in configured active states for a configured vault.
 
 2. `fetch_issues_by_states(state_names)`
    - Used for startup terminal cleanup.
@@ -1011,31 +1019,28 @@ An implementation must support these tracker adapter operations:
 3. `fetch_issue_states_by_ids(issue_ids)`
    - Used for active-run reconciliation.
 
-### 11.2 Query Semantics (Linear)
+### 11.2 File System Semantics (Obsidian)
 
-Linear-specific requirements for `tracker.kind == "linear"`:
+Obsidian-specific requirements for `tracker.kind == "obsidian"`:
 
-- `tracker.kind == "linear"`
-- GraphQL endpoint (default `https://api.linear.app/graphql`)
-- Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId`
-- Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
-- Issue-state refresh query uses GraphQL issue IDs with variable type `[ID!]`
-- Pagination required for candidate issues
-- Page size default: `50`
-- Network timeout: `30000 ms`
+- `tracker.kind == "obsidian"`
+- Reads from the local file system `vault_dir`.
+- `fetch_candidate_issues()` scans the `vault_dir` for `.md` files.
+- Parses their YAML frontmatter for status, priority, and labels.
+- Maps the filename (e.g., `ABC-123.md` -> `ABC-123`) or a specific YAML field to the `id`/`identifier`.
+- Candidate issue query filters by frontmatter fields.
+- Issue-state refresh query reads the specific Markdown file from disk.
 
 Important:
 
-- Linear GraphQL schema details can drift. Keep query construction isolated and test the exact query
-  fields/types required by this specification.
+- YAML parsing must gracefully handle malformed frontmatter. Keep parsing isolated and test the exact fields/types required by this specification.
 
-A non-Linear implementation may change transport details, but the normalized outputs must match the
+A non-Obsidian implementation may change transport details, but the normalized outputs must match the
 domain model in Section 4.
 
 ### 11.3 Normalization Rules
 
-Candidate issue normalization should produce fields listed in Section 4.1.1.
+Candidate issue normalization maps Markdown frontmatter/body data to the fields listed in Section 4.1.1.
 
 Additional normalization details:
 
@@ -1049,13 +1054,11 @@ Additional normalization details:
 Recommended error categories:
 
 - `unsupported_tracker_kind`
-- `missing_tracker_api_key`
-- `missing_tracker_project_slug`
-- `linear_api_request` (transport failures)
-- `linear_api_status` (non-200 HTTP)
-- `linear_graphql_errors`
-- `linear_unknown_payload`
-- `linear_missing_end_cursor` (pagination integrity error)
+- `missing_tracker_vault_dir`
+- `vault_dir_not_found`
+- `markdown_parse_error`
+- `missing_yaml_frontmatter`
+- `file_system_error`
 
 Orchestrator behavior on tracker errors:
 
@@ -1072,7 +1075,7 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
-- If the optional `linear_graphql` client-side tool extension is implemented, it is still part of
+- If the optional `obsidian_markdown_updater` client-side tool extension is implemented, it is still part of
   the agent toolchain rather than orchestrator business logic.
 
 ## 12. Prompt Construction and Context Assembly
@@ -1383,7 +1386,7 @@ API design notes:
 1. `Workflow/Config Failures`
    - Missing `WORKFLOW.md`
    - Invalid YAML front matter
-   - Unsupported tracker kind or missing tracker credentials/project slug
+   - Unsupported tracker kind or missing tracker vault dir
    - Missing coding-agent executable
 
 2. `Workspace Failures`
@@ -1401,10 +1404,9 @@ API design notes:
    - Stalled session (no activity)
 
 4. `Tracker Failures`
-   - API transport errors
-   - Non-200 status
-   - GraphQL errors
-   - malformed payloads
+   - File system errors
+   - YAML parse errors
+   - Missing frontmatter
 
 5. `Observability Failures`
    - Snapshot timeout
@@ -1520,10 +1522,10 @@ Possible hardening measures include:
 - Tightening OS-level and workspace permissions instead of running with a maximally permissive configuration.
 - Adding external isolation layers such as OS/container/VM sandboxing, network restrictions, or
   separate credentials beyond the built-in Gemini policy controls.
-- Filtering which Linear issues, projects, teams, labels, or other tracker sources are eligible for
+- Filtering which Obsidian issues, folders, tags, labels, or other tracker sources are eligible for
   dispatch so untrusted or out-of-scope tasks do not automatically reach the agent.
-- Narrowing the optional `linear_graphql` tool so it can only read or mutate data inside the
-  intended project scope, rather than exposing general workspace-wide tracker access.
+- Narrowing the optional `obsidian_markdown_updater` tool so it can only read or mutate data inside the
+  intended vault scope, rather than exposing general workspace-wide tracker access.
 - Reducing the set of client-side tools, credentials, filesystem paths, and network destinations
   available to the agent to the minimum needed for the workflow.
 
@@ -1797,9 +1799,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Invalid YAML front matter returns typed error
 - Front matter non-map returns typed error
 - Config defaults apply when optional values are missing
-- `tracker.kind` validation enforces currently supported kind (`linear`)
-- `tracker.api_key` works (including `$VAR` indirection)
-- `$VAR` resolution works for tracker API key and path values
+- `tracker.kind` validation enforces currently supported kind (`obsidian`)
+- `$VAR` resolution works for path values
 - `~` path expansion works
 - `gemini.command` is preserved as a shell command string
 - Per-state concurrency override map normalizes state names and ignores invalid values
@@ -1824,15 +1825,15 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.3 Issue Tracker Client
 
-- Candidate issue fetch uses active states and project slug
-- Linear query uses the specified project filter field (`slugId`)
+- Candidate issue fetch uses active states and vault directory
+- Obsidian query uses the specified vault directory
 - Empty `fetch_issues_by_states([])` returns empty without API call
 - Pagination preserves order across multiple pages
 - Blockers are normalized from inverse relations of type `blocks`
 - Labels are normalized to lowercase
 - Issue state refresh by ID returns minimal normalized issues
-- Issue state refresh query uses GraphQL ID typing (`[ID!]`) as specified in Section 11.2
-- Error mapping for request errors, non-200, GraphQL errors, malformed payloads
+- Issue state refresh query reads the target Markdown file from disk as specified in Section 11.2
+- Error mapping for file system errors, YAML parse errors, missing frontmatter
 
 ### 17.4 Orchestrator Dispatch, Reconciliation, and Retry
 
@@ -1870,11 +1871,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
   telemetry are accepted when they preserve the same logical meaning
 - If optional client-side tools are implemented, the startup handshake advertises the supported tool
   specs required for discovery by the targeted Gemini CLI version
-- If the optional `linear_graphql` client-side tool extension is implemented:
+- If the optional `obsidian_markdown_updater` client-side tool extension is implemented:
   - the tool is advertised to the session
-  - valid `query` / `variables` inputs execute against configured Linear auth
-  - top-level GraphQL `errors` produce `success=false` while preserving the GraphQL body
-  - invalid arguments, missing auth, and transport failures return structured failure payloads
+  - valid `issue_identifier` / `new_state` / `content_append` inputs execute against configured Obsidian vault
+  - file system errors produce `success=false`
+  - invalid arguments and transport failures return structured failure payloads
   - unsupported tool names still fail without stalling the session
 
 ### 17.6 Observability
@@ -1902,8 +1903,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 These checks are recommended for production readiness and may be skipped in CI when credentials,
 network access, or external service permissions are unavailable.
 
-- A real tracker smoke test can be run with valid credentials supplied by `LINEAR_API_KEY` or a
-  documented local bootstrap mechanism (for example `~/.linear_api_key`).
+- A real tracker smoke test can be run with a local mock vault directory.
 - Real integration tests should use isolated test identifiers/workspaces and clean up tracker
   artifacts when practical.
 - A skipped real-integration test should be reported as skipped, not silently treated as passed.
@@ -1943,14 +1943,14 @@ Use the same validation profiles as Section 17:
 
 - Optional HTTP server honors CLI `--port` over `server.port`, uses a safe default bind host, and
   exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
-- Optional `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
-  ACP session using configured Symphony auth.
+- Optional `obsidian_markdown_updater` client-side tool extension exposes raw Obsidian local vault access through the
+  ACP session.
 - TODO: Persist retry queue and session metadata across process restarts.
 - TODO: Make observability settings configurable in workflow front matter without prescribing UI
   implementation details.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
   of only via agent tools.
-- TODO: Add pluggable issue tracker adapters beyond Linear.
+- TODO: Add pluggable issue tracker adapters beyond Obsidian.
 
 ### 18.3 Operational Validation Before Production (Recommended)
 
