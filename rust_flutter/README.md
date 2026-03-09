@@ -315,3 +315,26 @@ This test suite includes:
 - `test_render_success`: Verifies that a valid template renders correctly, including iterating over `issue.labels` using `{% for %}`.
 - `test_render_unknown_variable`: Verifies that referencing an unknown property like `{{ issue.unknown }}` results in an error.
 - `test_render_unknown_filter`: Verifies that using an unknown filter like `{{ issue.identifier | unknown_filter }}` results in an error.
+
+## Tool Call Interception (Obsidian Updater)
+
+The Symphony backend execution engine dynamically intercepts ACP tool calls from the Gemini CLI stream parser.
+
+Specifically, it implements the `obsidian_markdown_updater` extension tool. When this tool is called by an agent, the backend intercepts it, updates the target Markdown file's YAML frontmatter with the specified `new_state`, and appends any provided `content_append` to the file body in the configured `vault_dir`.
+
+The agent communicates with the backend via the standard ACP over `stdio` stream, and the backend returns a JSON-RPC response message with `success=true` or an error payload directly to the agent's `stdin`. Unsupported tool calls gracefully return an error payload without stalling the session.
+
+### Testing Tool Interception
+
+You can verify the tool call interception feature and markdown updating logic using the unit tests for the ACP runner:
+
+```bash
+cd backend
+cargo test execution::runner
+```
+
+This test:
+1. Creates a dummy vault directory and populates an issue markdown file.
+2. Creates a mock agent script that echoes a JSON-RPC request for `obsidian_markdown_updater` to stdout.
+3. Spawns the agent. The backend reads the request, successfully processes it, updates the markdown file, and sends the JSON-RPC tool response to the agent's stdin.
+4. Verifies the markdown file was correctly modified (YAML updated, text appended) in the dummy vault.
