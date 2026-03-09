@@ -34,11 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Symphony Automation Service Starting...");
 
     // Try loading workflow config
-    let mut workflow_config = crate::config::loader::WorkflowConfig::default();
+    let mut workflow_doc = crate::config::loader::WorkflowDocument { config: crate::config::loader::WorkflowConfig::default(), markdown_body: "".to_string() };
     if args.config.exists() {
         if let Ok(content) = std::fs::read_to_string(&args.config) {
             if let Ok(doc) = crate::config::loader::parse_workflow_doc(&content) {
-                workflow_config = doc.config;
+                workflow_doc = doc;
                 println!("Loaded workflow configuration from {:?}", args.config);
             } else {
                 eprintln!("Failed to parse workflow document from {:?}", args.config);
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Workflow document {:?} not found, using default configuration.", args.config);
     }
 
-    let port = args.port.unwrap_or(workflow_config.server.port);
+    let port = args.port.unwrap_or(workflow_doc.config.server.port);
 
     // Initialize state
     let engine = OrchestratorEngine::new(
@@ -75,17 +75,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Orchestrator loop
     let orchestrator_clone = orchestrator.clone();
-    let config_clone = workflow_config.clone();
+    let doc_clone = workflow_doc.clone();
     let gemini_totals_clone = gemini_totals.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(config_clone.polling.interval_ms)) => {
-                    poll_and_run(&orchestrator_clone, &config_clone, &gemini_totals_clone).await;
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(doc_clone.config.polling.interval_ms)) => {
+                    poll_and_run(&orchestrator_clone, &doc_clone, &gemini_totals_clone).await;
                 }
                 _ = refresh_rx.recv() => {
                     println!("Received forced refresh signal.");
-                    poll_and_run(&orchestrator_clone, &config_clone, &gemini_totals_clone).await;
+                    poll_and_run(&orchestrator_clone, &doc_clone, &gemini_totals_clone).await;
                 }
             }
         }
@@ -103,10 +103,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn poll_and_run(
     orchestrator: &Arc<Mutex<OrchestratorEngine>>,
-    config: &crate::config::loader::WorkflowConfig,
+    doc: &crate::config::loader::WorkflowDocument,
     totals: &Arc<Mutex<GeminiTotals>>
 ) {
-    let vault_dir = config.tracker.vault_path.as_deref().unwrap_or("");
+    let vault_dir = doc.config.tracker.vault_path.as_deref().unwrap_or("");
     let vault_path = std::path::Path::new(vault_dir);
 
     // Fetch candidate issues (assuming "todo" and "in-progress" are active)
@@ -132,7 +132,9 @@ async fn poll_and_run(
 
     for (issue_id, cancel_rx) in tasks_to_spawn {
         let engine_clone = orchestrator.clone();
-        let config_clone = config.clone();
+        let doc_clone = doc.clone();
+        let config_clone = doc.config.clone();
+        let attempt_count = orchestrator.lock().await.retry_attempts.get(&issue_id).map(|r| r.attempt_count).unwrap_or(0);
         let totals_clone = totals.clone();
         let vault_path_owned = vault_path.to_path_buf();
 
@@ -181,10 +183,12 @@ async fn poll_and_run(
             }
 
             let gemini_command = config_clone.agent.model.unwrap_or_else(|| "gemini".to_string()); // Default to gemini if not set
+            let rendered_prompt = crate::prompt::renderer::render_prompt(&doc_clone.markdown_body, &issue, Some(attempt_count)).unwrap_or_else(|e| { eprintln!("Template render failed: {}", e); String::new() });
 
             let result = AgentRunner::run_agent(
                 workspace_path,
                 &gemini_command,
+                rendered_prompt,
                 &vault_path_owned,
                 issue_id.clone(),
                 cancel_rx,
