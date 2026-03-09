@@ -403,12 +403,22 @@ async fn run_prompt_session(
 
 // ─── Shared Helpers ───
 
-/// Launch the agent process via `bash -lc` (§10.1).
+/// Launch the agent process with pseudo-TTY for line-buffered output.
+///
+/// Uses `script -q /dev/null` on macOS to allocate a pseudo-TTY,
+/// which forces line-buffered stdout. Without this, many CLI tools
+/// (e.g. Claude, Gemini) use full buffering when piped, causing
+/// no output until the process exits.
 fn launch_agent_process(
     command: &str,
     workspace_path: &str,
 ) -> Result<Child, AgentRunnerError> {
-    Command::new("bash")
+    // Use `script` to allocate a pseudo-TTY for line-buffered output
+    // macOS: script -q /dev/null bash -lc "command"
+    Command::new("script")
+        .arg("-q")
+        .arg("/dev/null")
+        .arg("bash")
         .arg("-lc")
         .arg(command)
         .current_dir(workspace_path)
