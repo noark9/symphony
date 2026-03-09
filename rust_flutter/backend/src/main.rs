@@ -12,6 +12,10 @@ use tokio::sync::{mpsc, Mutex};
 use std::path::PathBuf;
 
 use crate::api::state::{AppState, GeminiTotals};
+use crate::tracker::obsidian;
+use crate::execution::workspace::WorkspaceManager;
+use crate::execution::hooks::HooksManager;
+use crate::execution::runner::AgentRunner;
 use crate::orchestrator::engine::OrchestratorEngine;
 
 #[derive(Parser, Debug)]
@@ -69,17 +73,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         refresh_tx,
     };
 
-    // Orchestrator loop (mock implementation for now)
+        // Orchestrator loop
     let orchestrator_clone = orchestrator.clone();
+    let config_clone = workflow_config.clone();
+    let gemini_totals_clone = gemini_totals.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(workflow_config.polling.interval_ms)) => {
-                    let _ = orchestrator_clone.lock().await.poll(vec![]);
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(config_clone.polling.interval_ms)) => {
+                    poll_and_run(&orchestrator_clone, &config_clone, &gemini_totals_clone).await;
                 }
                 _ = refresh_rx.recv() => {
                     println!("Received forced refresh signal.");
-                    let _ = orchestrator_clone.lock().await.poll(vec![]);
+                    poll_and_run(&orchestrator_clone, &config_clone, &gemini_totals_clone).await;
                 }
             }
         }
@@ -93,4 +99,110 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn poll_and_run(
+    orchestrator: &Arc<Mutex<OrchestratorEngine>>,
+    config: &crate::config::loader::WorkflowConfig,
+    totals: &Arc<Mutex<GeminiTotals>>
+) {
+    let vault_dir = config.tracker.vault_path.as_deref().unwrap_or("");
+    let vault_path = std::path::Path::new(vault_dir);
+
+    // Fetch candidate issues (assuming "todo" and "in-progress" are active)
+    let candidate_issues = match obsidian::fetch_candidate_issues(vault_path, &["todo", "in-progress"]) {
+        Ok(issues) => issues,
+        Err(e) => {
+            eprintln!("Failed to fetch candidate issues: {}", e);
+            vec![]
+        }
+    };
+
+    let mut engine = orchestrator.lock().await;
+    let dispatched = engine.poll(candidate_issues);
+
+    // Convert to owned strings to avoid holding the lock
+    let mut tasks_to_spawn = Vec::new();
+    for (issue_id, cancel_rx) in dispatched {
+        tasks_to_spawn.push((issue_id, cancel_rx));
+    }
+
+    // Release the lock before spawning tasks that might need it
+    drop(engine);
+
+    for (issue_id, cancel_rx) in tasks_to_spawn {
+        let engine_clone = orchestrator.clone();
+        let config_clone = config.clone();
+        let totals_clone = totals.clone();
+        let vault_path_owned = vault_path.to_path_buf();
+
+        tokio::spawn(async move {
+            let wm = WorkspaceManager::new(&config_clone.workspace.root);
+
+            // Re-fetch the issue to pass to create_workspace
+            let issue_details = obsidian::fetch_candidate_issues(&vault_path_owned, &["todo", "in-progress"])
+                .unwrap_or_default()
+                .into_iter()
+                .find(|i| i.id == issue_id);
+
+            let issue = match issue_details {
+                Some(i) => i,
+                None => {
+                    eprintln!("Issue {} disappeared before dispatch", issue_id);
+                    engine_clone.lock().await.handle_exit(&issue_id, true);
+                    return;
+                }
+            };
+
+            let workspace = match wm.create_workspace(&issue) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("Failed to create workspace for {}: {:?}", issue_id, e);
+                    engine_clone.lock().await.handle_exit(&issue_id, true);
+                    return;
+                }
+            };
+
+            let workspace_path = std::path::Path::new(&workspace.path);
+            let timeout_ms = config_clone.hooks.timeout_ms;
+
+            let after_create_err = HooksManager::after_create(workspace_path, config_clone.hooks.after_create.as_deref(), timeout_ms).await.err().map(|e| e.to_string());
+            if let Some(err_msg) = after_create_err {
+                eprintln!("after_create hook failed for {}: {}", issue_id, err_msg);
+                engine_clone.lock().await.handle_exit(&issue_id, true);
+                return;
+            }
+
+            let before_run_err = HooksManager::before_run(workspace_path, config_clone.hooks.before_run.as_deref(), timeout_ms).await.err().map(|e| e.to_string());
+            if let Some(err_msg) = before_run_err {
+                eprintln!("before_run hook failed for {}: {}", issue_id, err_msg);
+                engine_clone.lock().await.handle_exit(&issue_id, true);
+                return;
+            }
+
+            let gemini_command = config_clone.agent.model.unwrap_or_else(|| "gemini".to_string()); // Default to gemini if not set
+
+            let result = AgentRunner::run_agent(
+                workspace_path,
+                &gemini_command,
+                &vault_path_owned,
+                issue_id.clone(),
+                cancel_rx,
+                engine_clone.clone(),
+                totals_clone
+            ).await;
+
+            let abnormal = result.is_err();
+            if abnormal {
+                eprintln!("Agent failed for {}: {:?}", issue_id, result.err());
+            } else {
+                println!("Agent completed for {}", issue_id);
+            }
+
+            let _ = HooksManager::after_run(workspace_path, config_clone.hooks.after_run.as_deref(), timeout_ms).await;
+            let _ = HooksManager::before_remove(workspace_path, config_clone.hooks.before_remove.as_deref(), timeout_ms).await;
+
+            engine_clone.lock().await.handle_exit(&issue_id, abnormal);
+        });
+    }
 }
