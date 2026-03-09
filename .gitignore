@@ -1,0 +1,71 @@
+# ========================
+# Rust
+# ========================
+rust/target/
+
+# ========================
+# Node.js / Frontend
+# ========================
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ========================
+# Elixir / Mix
+# ========================
+_build/
+cover/
+deps/
+doc/
+*.ez
+erl_crash.dump
+.elixir_ls/
+.fetch/
+
+# ========================
+# OS generated files
+# ========================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ========================
+# Editor / IDE
+# ========================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ========================
+# Environment & secrets
+# ========================
+.env
+.env.*
+!.env.example
+.secrets
+.credentials
+
+# ========================
+# Logs
+# ========================
+log/
+logs/
+
+# ========================
+# Codex
+# ========================
+.codex/
