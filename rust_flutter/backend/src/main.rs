@@ -3,6 +3,7 @@ mod config;
 mod domain;
 mod execution;
 mod orchestrator;
+mod prompt;
 mod tracker;
 
 use clap::Parser;
