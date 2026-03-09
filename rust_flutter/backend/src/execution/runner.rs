@@ -8,7 +8,7 @@ use crate::tracker::updater::update_obsidian_markdown;
 pub struct AgentRunner;
 
 impl AgentRunner {
-    pub async fn run_agent(workspace_path: &Path, gemini_command: &str, vault_dir: &Path, issue_id: String, mut cancel_rx: tokio::sync::mpsc::Receiver<()>, engine: std::sync::Arc<tokio::sync::Mutex<crate::orchestrator::engine::OrchestratorEngine>>, totals: std::sync::Arc<tokio::sync::Mutex<crate::api::state::GeminiTotals>>) -> std::io::Result<()> {
+    pub async fn run_agent(workspace_path: &Path, gemini_command: &str, rendered_prompt: String, vault_dir: &Path, issue_id: String, mut cancel_rx: tokio::sync::mpsc::Receiver<()>, engine: std::sync::Arc<tokio::sync::Mutex<crate::orchestrator::engine::OrchestratorEngine>>, totals: std::sync::Arc<tokio::sync::Mutex<crate::api::state::GeminiTotals>>) -> std::io::Result<()> {
         let start_time = chrono::Utc::now();
         let mut child = Command::new("bash")
             .arg("-lc")
@@ -22,6 +22,10 @@ impl AgentRunner {
         let stdout = child.stdout.take().expect("Failed to open stdout");
         let stderr = child.stderr.take().expect("Failed to open stderr");
         let mut stdin = child.stdin.take().expect("Failed to open stdin");
+
+        if let Err(e) = stdin.write_all(format!("{}\n", rendered_prompt).as_bytes()).await {
+            eprintln!("Failed to write initial prompt to stdin: {}", e);
+        }
 
         let vault_dir_owned = vault_dir.to_path_buf();
 
@@ -224,7 +228,7 @@ echo "Received2: $response2" >&2
         }));
         let (_cancel_tx, cancel_rx) = tokio::sync::mpsc::channel(1);
 
-        let result = AgentRunner::run_agent(workspace_path, &gemini_command, vault_dir.path(), "ISSUE-1".to_string(), cancel_rx, engine, totals).await;
+        let result = AgentRunner::run_agent(workspace_path, &gemini_command, "Test prompt".to_string(), vault_dir.path(), "ISSUE-1".to_string(), cancel_rx, engine, totals).await;
 
         assert!(result.is_ok());
 
@@ -261,7 +265,7 @@ echo '{"total_token_usage": {"prompt_tokens": 150, "candidate_tokens": 80, "tota
         }));
         let (_cancel_tx, cancel_rx) = tokio::sync::mpsc::channel(1);
 
-        let result = AgentRunner::run_agent(workspace_path, &gemini_command, vault_dir.path(), "ISSUE-TOKENS".to_string(), cancel_rx, engine, totals.clone()).await;
+        let result = AgentRunner::run_agent(workspace_path, &gemini_command, "Test prompt".to_string(), vault_dir.path(), "ISSUE-TOKENS".to_string(), cancel_rx, engine, totals.clone()).await;
         assert!(result.is_ok());
 
         let t = totals.lock().await;
@@ -301,7 +305,7 @@ sleep 10
         });
 
         let start = std::time::Instant::now();
-        let result = AgentRunner::run_agent(workspace_path, &gemini_command, vault_dir.path(), "ISSUE-STALL".to_string(), cancel_rx, engine, totals).await;
+        let result = AgentRunner::run_agent(workspace_path, &gemini_command, "Test prompt".to_string(), vault_dir.path(), "ISSUE-STALL".to_string(), cancel_rx, engine, totals).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_ok());
