@@ -155,21 +155,30 @@ impl AgentRunner {
             }
         });
 
-        tokio::select! {
+        let exit_result = tokio::select! {
             status = child.wait() => {
-                let _ = status?;
+                status
             }
             _ = cancel_rx.recv() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
+                Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Agent was cancelled"))
             }
-        }
+        };
 
         // Wait for tasks to finish
         let _ = tokio::join!(stdout_task, stderr_task);
         let elapsed = chrono::Utc::now().signed_duration_since(start_time).num_seconds();
         if elapsed > 0 {
             totals.lock().await.total_runtime_seconds += elapsed as u64;
+        }
+
+        match exit_result {
+            Ok(status) if !status.success() => {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("Agent exited with status: {}", status)));
+            }
+            Err(e) => return Err(e),
+            _ => {}
         }
 
         Ok(())
@@ -308,7 +317,7 @@ sleep 10
         let result = AgentRunner::run_agent(workspace_path, &gemini_command, "Test prompt".to_string(), vault_dir.path(), "ISSUE-STALL".to_string(), cancel_rx, engine, totals).await;
         let elapsed = start.elapsed();
 
-        assert!(result.is_ok());
+        assert!(result.is_err());
         // Should have completed much faster than the 10s sleep
         assert!(elapsed.as_millis() < 2000);
     }
