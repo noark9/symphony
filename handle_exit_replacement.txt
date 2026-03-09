@@ -1,0 +1,7 @@
+    pub fn handle_exit(&mut self, issue_id: &str, abnormal: bool) {
+        if let Some(mut session) = self.running.remove(issue_id) {
+            if let Some(tx) = session.cancel_tx.take() {
+                let _ = tx.try_send(());
+            }
+        }
+        self.claimed.remove(issue_id);
