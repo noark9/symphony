@@ -278,3 +278,40 @@ hooks:
   after_create: "./fail.sh"
 ```
 When the orchestrator creates a workspace and triggers this hook, the operation will be aborted.
+
+## Liquid Template Rendering
+
+The Symphony backend uses the `liquid` crate to render templates, specifically for prompt templates defined in the `WORKFLOW.md` configuration.
+
+The `prompt::renderer::render_prompt` function takes a template string, an `Issue` object, and an optional `attempt` integer. It uses `ParserBuilder::with_stdlib()` to parse the template.
+
+### Context Variables
+
+The following variables are injected into the template context:
+- `issue`: An object containing the issue's properties:
+  - `id`
+  - `identifier`
+  - `title`
+  - `description`
+  - `state`
+  - `labels` (an array of strings)
+  - `blocked_by`
+- `attempt`: An integer representing the current run attempt number (only injected if provided).
+
+### Strict Rendering
+
+The template rendering is designed to fail strictly if a template references an unknown variable, an unknown index, or an unknown filter. This is a native behavior of the `liquid` parser in this configuration. For instance, if a template includes `{{ unknown_var }}` or `{{ issue.unknown_property }}`, the rendering will return an error.
+
+### Testing Template Rendering
+
+You can verify the strict rendering behavior and nested array iteration using the unit tests in the `prompt::renderer` module:
+
+```bash
+cd backend
+cargo test prompt::renderer
+```
+
+This test suite includes:
+- `test_render_success`: Verifies that a valid template renders correctly, including iterating over `issue.labels` using `{% for %}`.
+- `test_render_unknown_variable`: Verifies that referencing an unknown property like `{{ issue.unknown }}` results in an error.
+- `test_render_unknown_filter`: Verifies that using an unknown filter like `{{ issue.identifier | unknown_filter }}` results in an error.
