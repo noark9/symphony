@@ -58,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prompt_tokens: 0,
         candidate_tokens: 0,
         total_requests: 0,
+        total_runtime_seconds: 0,
     }));
 
     let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
@@ -69,16 +70,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Orchestrator loop (mock implementation for now)
+    let orchestrator_clone = orchestrator.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(workflow_config.polling.interval_ms)) => {
-                    // Regular poll
-                    // In a real implementation, this is where we'd fetch issues and call `engine.poll(candidates)`
+                    let _ = orchestrator_clone.lock().await.poll(vec![]);
                 }
                 _ = refresh_rx.recv() => {
                     println!("Received forced refresh signal.");
-                    // In a real implementation, this would trigger an immediate fetch and poll
+                    let _ = orchestrator_clone.lock().await.poll(vec![]);
                 }
             }
         }

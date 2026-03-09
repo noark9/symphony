@@ -10,6 +10,7 @@ pub struct GeminiTotals {
     pub prompt_tokens: u64,
     pub candidate_tokens: u64,
     pub total_requests: u64,
+    pub total_runtime_seconds: u64,
 }
 
 #[derive(Clone)]

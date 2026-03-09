@@ -13,6 +13,7 @@ pub struct ActiveSession {
     pub issue_id: String,
     pub started_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
+    pub cancel_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 pub struct OrchestratorEngine {
@@ -47,29 +48,35 @@ impl OrchestratorEngine {
         true
     }
 
-    pub fn start_issue(&mut self, issue_id: &str) -> bool {
+    pub fn start_issue(&mut self, issue_id: &str) -> Option<tokio::sync::mpsc::Receiver<()>> {
         if self.running.contains_key(issue_id) {
-            return false; // Idempotency: already running
+            return None; // Idempotency: already running
         }
 
         if !self.claimed.contains(issue_id) {
             if !self.try_claim(issue_id) {
-                return false;
+                return None;
             }
         }
 
         let now = Utc::now();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
         self.running.insert(issue_id.to_string(), ActiveSession {
             issue_id: issue_id.to_string(),
             started_at: now,
             last_heartbeat: now,
+            cancel_tx: Some(tx),
         });
 
-        true
+        Some(rx)
     }
 
     pub fn finish_issue(&mut self, issue_id: &str) {
-        self.running.remove(issue_id);
+        if let Some(mut session) = self.running.remove(issue_id) {
+            if let Some(tx) = session.cancel_tx.take() {
+                let _ = tx.try_send(());
+            }
+        }
         self.claimed.remove(issue_id);
         self.retry_attempts.remove(issue_id);
     }
@@ -102,7 +109,11 @@ impl OrchestratorEngine {
 
 impl OrchestratorEngine {
     pub fn handle_exit(&mut self, issue_id: &str, abnormal: bool) {
-        self.running.remove(issue_id);
+        if let Some(mut session) = self.running.remove(issue_id) {
+            if let Some(tx) = session.cancel_tx.take() {
+                let _ = tx.try_send(());
+            }
+        }
         self.claimed.remove(issue_id);
 
         let now = Utc::now();
@@ -125,7 +136,7 @@ impl OrchestratorEngine {
 }
 
 impl OrchestratorEngine {
-    pub fn poll(&mut self, candidate_issues: Vec<Issue>) -> Vec<String> {
+    pub fn poll(&mut self, candidate_issues: Vec<Issue>) -> Vec<(String, tokio::sync::mpsc::Receiver<()>)> {
         // Reconcile stalls first
         let stalled = self.detect_stalls();
         for id in &stalled {
@@ -171,8 +182,8 @@ impl OrchestratorEngine {
                 }
             }
 
-            if self.start_issue(id) {
-                dispatchable.push(id.clone());
+            if let Some(rx) = self.start_issue(id) {
+                dispatchable.push((id.clone(), rx));
                 available_slots -= 1;
             }
         }
@@ -207,16 +218,16 @@ mod tests {
     #[test]
     fn test_start_issue() {
         let mut engine = OrchestratorEngine::new(2, 5000, 30000);
-        assert!(engine.start_issue("issue-1"));
+        assert!(engine.start_issue("issue-1").is_some());
         assert!(engine.running.contains_key("issue-1"));
         assert!(engine.claimed.contains("issue-1"));
-        assert!(!engine.start_issue("issue-1")); // idempotency
+        assert!(engine.start_issue("issue-1").is_none()); // idempotency
     }
 
     #[test]
     fn test_finish_issue() {
         let mut engine = OrchestratorEngine::new(2, 5000, 30000);
-        engine.start_issue("issue-1");
+        let _ = engine.start_issue("issue-1");
         engine.finish_issue("issue-1");
         assert!(!engine.running.contains_key("issue-1"));
         assert!(!engine.claimed.contains("issue-1"));
@@ -225,7 +236,7 @@ mod tests {
     #[test]
     fn test_detect_stalls() {
         let mut engine = OrchestratorEngine::new(2, 100, 30000);
-        engine.start_issue("issue-1");
+        let _ = engine.start_issue("issue-1");
 
         if let Some(session) = engine.running.get_mut("issue-1") {
             session.last_heartbeat = Utc::now() - chrono::Duration::milliseconds(150);
@@ -239,7 +250,7 @@ mod tests {
     #[test]
     fn test_handle_exit_normal() {
         let mut engine = OrchestratorEngine::new(2, 5000, 30000);
-        engine.start_issue("issue-1");
+        let _ = engine.start_issue("issue-1");
         engine.handle_exit("issue-1", false); // normal exit
 
         let retry_info = engine.retry_attempts.get("issue-1").unwrap();
@@ -254,7 +265,7 @@ mod tests {
     #[test]
     fn test_handle_exit_abnormal_backoff() {
         let mut engine = OrchestratorEngine::new(2, 5000, 30000);
-        engine.start_issue("issue-1");
+        let _ = engine.start_issue("issue-1");
         engine.handle_exit("issue-1", true); // 1st failure
 
         let info1 = engine.retry_attempts.get("issue-1").unwrap();
@@ -262,7 +273,7 @@ mod tests {
         let now = Utc::now();
         assert!((info1.next_retry_at - now).num_milliseconds() - 1000 < 50);
 
-        engine.start_issue("issue-1");
+        let _ = engine.start_issue("issue-1");
         engine.handle_exit("issue-1", true); // 2nd failure
 
         let info2 = engine.retry_attempts.get("issue-1").unwrap();
@@ -286,8 +297,8 @@ mod tests {
         // Max concurrent is 2, so only 2 should be dispatched
         assert_eq!(dispatched.len(), 2);
         // "high-prio" should be first
-        assert_eq!(dispatched[0], "high-prio");
-        assert_eq!(dispatched[1], "med-prio");
+        assert_eq!(dispatched[0].0, "high-prio");
+        assert_eq!(dispatched[1].0, "med-prio");
 
         // Now try polling again with no available slots
         let candidates2 = vec![create_issue("low-prio", vec!["low"])];
@@ -299,13 +310,13 @@ mod tests {
         let candidates3 = vec![create_issue("low-prio", vec!["low"])];
         let dispatched3 = engine.poll(candidates3);
         assert_eq!(dispatched3.len(), 1);
-        assert_eq!(dispatched3[0], "low-prio");
+        assert_eq!(dispatched3[0].0, "low-prio");
     }
 
     #[test]
     fn test_poll_retry_backoff() {
         let mut engine = OrchestratorEngine::new(2, 5000, 30000);
-        engine.start_issue("issue-1");
+        let _ = engine.start_issue("issue-1");
         engine.handle_exit("issue-1", false); // normal exit, retry in 1s
 
         let candidates = vec![create_issue("issue-1", vec![])];

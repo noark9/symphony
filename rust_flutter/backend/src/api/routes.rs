@@ -39,6 +39,7 @@ pub async fn get_state(State(state): State<AppState>) -> impl IntoResponse {
             "prompt_tokens": totals.prompt_tokens,
             "candidate_tokens": totals.candidate_tokens,
             "total_requests": totals.total_requests,
+            "total_runtime_seconds": totals.total_runtime_seconds,
         }
     });
 

@@ -338,3 +338,16 @@ This test:
 2. Creates a mock agent script that echoes a JSON-RPC request for `obsidian_markdown_updater` to stdout.
 3. Spawns the agent. The backend reads the request, successfully processes it, updates the markdown file, and sends the JSON-RPC tool response to the agent's stdin.
 4. Verifies the markdown file was correctly modified (YAML updated, text appended) in the dummy vault.
+
+### Precise Token Accounting & Stall Detection
+The `AgentRunner` extracts token counts (`prompt_tokens`, `candidate_tokens`, `total_requests`) dynamically from the agent's ACP JSON payload stream over `stdout`. Because an agent may stream cumulative `total_token_usage` over a single long-running request, the runner keeps track of the previously seen token counts and accurately calculates deltas (e.g. `new_prompt_tokens - last_prompt_tokens`). These deltas are then accumulated into the global `GeminiTotals` thread-safe struct. This ensures the counts are precise without double-counting tokens within the same session. Additionally, when a session gracefully exits, the duration of the session is calculated and accumulated into the `total_runtime_seconds` metric.
+
+The runner emits a `heartbeat` directly to the `OrchestratorEngine` state machine every time a line is read from `stdout`. The orchestrator polls via `detect_stalls` regularly (e.g. from the `main.rs` mock poll loop or API triggers) to detect any running sessions whose `last_heartbeat` exceeds the `gemini.stall_timeout_ms` threshold. Stalled sessions are processed by `handle_exit` which fires a signal via `tokio::sync::mpsc::Sender`, causing the `AgentRunner` to forcibly kill the subprocess via `child.kill().await`, releasing the resources for subsequent attempts.
+
+**Testing Token Accounting and Stall Detection:**
+You can run the token accounting tests (which simulates multiple ACP messages parsing to calculate token deltas correctly) and the stall detection test (which simulates a stalled child process being killed by the cancellation token) with:
+```bash
+cd backend
+cargo test test_run_agent_token_accounting
+cargo test test_orchestrator_stall_kills_agent
+```
