@@ -75,6 +75,8 @@ pub struct ServiceConfig {
 pub struct TrackerConfig {
     pub kind: Option<String>,
     pub vault_dir: Option<String>,
+    /// Subdirectory within the vault to scan for issue files (default: "Issues").
+    pub issues_dir: Option<String>,
     pub active_states: Vec<String>,
     pub terminal_states: Vec<String>,
 }

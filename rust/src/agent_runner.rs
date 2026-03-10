@@ -327,19 +327,13 @@ async fn run_prompt_session(
         _ = cancel_token.cancelled() => Err(AgentRunnerError::TurnCancelled),
     };
 
-    // Wait for stderr reader to finish
-    let _ = stderr_handle.await;
-    let stderr_output = stderr_lines.lock().await;
-
-    // Build combined output summary for error messages
+    // Build combined output summary (used in error paths)
     let build_output_summary = |stdout_lines: &[String], stderr_lines: &[String]| -> String {
         let mut parts = Vec::new();
-        // Last N lines of stderr (most useful for errors)
         if !stderr_lines.is_empty() {
             let tail: Vec<&str> = stderr_lines.iter().rev().take(10).rev().map(|s| s.as_str()).collect();
             parts.push(format!("stderr:\n{}", tail.join("\n")));
         }
-        // Last N lines of stdout
         if !stdout_lines.is_empty() {
             let tail: Vec<&str> = stdout_lines.iter().rev().take(5).rev().map(|s| s.as_str()).collect();
             parts.push(format!("stdout:\n{}", tail.join("\n")));
@@ -354,8 +348,15 @@ async fn run_prompt_session(
     // Wait for process to finish and check exit code
     match read_result {
         Ok(()) => {
+            // Normal completion: wait for stderr to finish, then check exit code
+            let _ = stderr_handle.await;
+            let stderr_output = stderr_lines.lock().await;
+
             match child.wait().await {
                 Ok(status) if status.success() => {
+                    if config.log_agent_output {
+                        info!("[agent:done] session completed successfully ({} output lines)", output_lines.len());
+                    }
                     let _ = event_tx.send(AgentEvent {
                         event: AgentEventType::TurnCompleted,
                         timestamp: Utc::now(),
@@ -395,7 +396,48 @@ async fn run_prompt_session(
             }
         }
         Err(e) => {
-            let _ = child.kill().await;
+            // On cancel/timeout: try to drain remaining output before killing.
+            // Claude -p mode only outputs the final result at the end, so we need
+            // to give it a chance to finish and flush.
+            info!("[agent:cancel] session cancelled ({}), draining remaining output...", e);
+
+            // Wait up to 10s for the process to exit naturally
+            let drain_timeout = Duration::from_secs(10);
+            let drain_result = tokio::time::timeout(drain_timeout, async {
+                loop {
+                    line_buf.clear();
+                    match stdout_reader.read_line(&mut line_buf).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let line = line_buf.trim_end().to_string();
+                            if !line.is_empty() {
+                                if config.log_agent_output {
+                                    info!("[agent:stdout] {}", line);
+                                }
+                                output_lines.push(line);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .await;
+
+            if drain_result.is_err() {
+                info!("[agent:cancel] drain timeout, killing process");
+                let _ = child.kill().await;
+            }
+
+            // Wait for stderr to finish
+            let _ = stderr_handle.await;
+            let stderr_output = stderr_lines.lock().await;
+
+            // Log whatever output we captured
+            if config.log_agent_output && (!output_lines.is_empty() || !stderr_output.is_empty()) {
+                let summary = build_output_summary(&output_lines, &stderr_output);
+                info!("[agent:output] captured after cancel:\n{}", summary);
+            }
+
             Err(e)
         }
     }
@@ -403,22 +445,12 @@ async fn run_prompt_session(
 
 // ─── Shared Helpers ───
 
-/// Launch the agent process with pseudo-TTY for line-buffered output.
-///
-/// Uses `script -q /dev/null` on macOS to allocate a pseudo-TTY,
-/// which forces line-buffered stdout. Without this, many CLI tools
-/// (e.g. Claude, Gemini) use full buffering when piped, causing
-/// no output until the process exits.
+/// Launch the agent process via `bash -lc` (§10.1).
 fn launch_agent_process(
     command: &str,
     workspace_path: &str,
 ) -> Result<Child, AgentRunnerError> {
-    // Use `script` to allocate a pseudo-TTY for line-buffered output
-    // macOS: script -q /dev/null bash -lc "command"
-    Command::new("script")
-        .arg("-q")
-        .arg("/dev/null")
-        .arg("bash")
+    Command::new("bash")
         .arg("-lc")
         .arg(command)
         .current_dir(workspace_path)

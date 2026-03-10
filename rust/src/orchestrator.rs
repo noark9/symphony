@@ -259,6 +259,7 @@ pub async fn start_orchestrator(
     // Initialize components
     let tracker = ObsidianTracker::new(
         config.tracker.vault_dir.clone().unwrap_or_default(),
+        config.tracker.issues_dir.clone(),
         config.tracker.active_states.clone(),
         config.tracker.terminal_states.clone(),
     );
@@ -988,6 +989,7 @@ async fn watch_workflow_file(path: PathBuf, state: SharedState) {
                 // Update tracker config
                 s.tracker.update_config(
                     new_config.tracker.vault_dir.clone().unwrap_or_default(),
+                    new_config.tracker.issues_dir.clone(),
                     new_config.tracker.active_states.clone(),
                     new_config.tracker.terminal_states.clone(),
                 );

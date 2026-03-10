@@ -81,6 +81,7 @@ fn parse_tracker(yaml: &Value) -> TrackerConfig {
     TrackerConfig {
         kind: get_str(tracker, "kind"),
         vault_dir: get_str(tracker, "vault_dir").map(|s| resolve_path(&s)),
+        issues_dir: get_str(tracker, "issues_dir").or_else(|| Some("Issues".to_string())),
         active_states: get_string_list(tracker, "active_states")
             .unwrap_or_else(|| DEFAULT_ACTIVE_STATES.iter().map(|s| s.to_string()).collect()),
         terminal_states: get_string_list(tracker, "terminal_states")

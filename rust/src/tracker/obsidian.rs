@@ -9,17 +9,20 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-/// Obsidian tracker that reads `.md` files from a local vault directory.
+/// Obsidian tracker that reads `.md` files from a subdirectory within the vault.
 pub struct ObsidianTracker {
     vault_dir: PathBuf,
+    /// Subdirectory within vault_dir to scan for issues (e.g. "Issues").
+    issues_dir: String,
     active_states: Vec<String>,
     terminal_states: Vec<String>,
 }
 
 impl ObsidianTracker {
-    pub fn new(vault_dir: String, active_states: Vec<String>, terminal_states: Vec<String>) -> Self {
+    pub fn new(vault_dir: String, issues_dir: Option<String>, active_states: Vec<String>, terminal_states: Vec<String>) -> Self {
         Self {
             vault_dir: PathBuf::from(vault_dir),
+            issues_dir: issues_dir.unwrap_or_else(|| "Issues".to_string()),
             active_states,
             terminal_states,
         }
@@ -29,28 +32,36 @@ impl ObsidianTracker {
     pub fn update_config(
         &mut self,
         vault_dir: String,
+        issues_dir: Option<String>,
         active_states: Vec<String>,
         terminal_states: Vec<String>,
     ) {
         self.vault_dir = PathBuf::from(vault_dir);
+        self.issues_dir = issues_dir.unwrap_or_else(|| "Issues".to_string());
         self.active_states = active_states;
         self.terminal_states = terminal_states;
     }
 
-    /// Scan vault directory for `.md` files and parse them as issues.
+    /// Return the resolved issues directory path (vault_dir / issues_dir).
+    fn issues_path(&self) -> PathBuf {
+        self.vault_dir.join(&self.issues_dir)
+    }
+
+    /// Scan vault issues directory for `.md` files and parse them as issues.
     fn scan_vault(&self, filter_states: &[String]) -> Result<Vec<Issue>, TrackerError> {
-        if !self.vault_dir.exists() {
+        let issues_path = self.issues_path();
+        if !issues_path.exists() {
             return Err(TrackerError::VaultDirNotFound(
-                self.vault_dir.display().to_string(),
+                issues_path.display().to_string(),
             ));
         }
 
         let mut issues = Vec::new();
 
-        let entries = std::fs::read_dir(&self.vault_dir).map_err(|e| {
+        let entries = std::fs::read_dir(&issues_path).map_err(|e| {
             TrackerError::FileSystemError(format!(
-                "failed to read vault dir {}: {}",
-                self.vault_dir.display(),
+                "failed to read issues dir {}: {}",
+                issues_path.display(),
                 e
             ))
         })?;
@@ -87,8 +98,8 @@ impl ObsidianTracker {
 
     /// Fetch a single issue by its identifier (file basename).
     fn fetch_issue_by_id(&self, issue_id: &str) -> Result<Option<Issue>, TrackerError> {
-        // Issue ID matches filename (without .md extension)
-        let path = self.vault_dir.join(format!("{}.md", issue_id));
+        // Issue ID matches filename (without .md extension) in issues_dir
+        let path = self.issues_path().join(format!("{}.md", issue_id));
         if !path.exists() {
             return Ok(None);
         }
@@ -289,10 +300,12 @@ mod tests {
 
     fn create_test_vault() -> TempDir {
         let dir = TempDir::new().unwrap();
+        let issues_dir = dir.path().join("Issues");
+        fs::create_dir_all(&issues_dir).unwrap();
 
         // Create a Todo issue
         fs::write(
-            dir.path().join("TEST-1.md"),
+            issues_dir.join("TEST-1.md"),
             r#"---
 id: test-1
 identifier: TEST-1
@@ -310,7 +323,7 @@ This is the issue description.
 
         // Create an In Progress issue
         fs::write(
-            dir.path().join("TEST-2.md"),
+            issues_dir.join("TEST-2.md"),
             r#"---
 id: test-2
 identifier: TEST-2
@@ -325,7 +338,7 @@ Feature description.
 
         // Create a Done issue
         fs::write(
-            dir.path().join("TEST-3.md"),
+            issues_dir.join("TEST-3.md"),
             r#"---
 id: test-3
 identifier: TEST-3
@@ -344,6 +357,7 @@ status: Done
         let vault = create_test_vault();
         let tracker = ObsidianTracker::new(
             vault.path().display().to_string(),
+            None, // default "Issues"
             vec!["Todo".to_string(), "In Progress".to_string()],
             vec!["Done".to_string()],
         );
@@ -361,6 +375,7 @@ status: Done
         let vault = create_test_vault();
         let tracker = ObsidianTracker::new(
             vault.path().display().to_string(),
+            None,
             vec!["Todo".to_string()],
             vec!["Done".to_string()],
         );
@@ -378,6 +393,7 @@ status: Done
         let vault = create_test_vault();
         let tracker = ObsidianTracker::new(
             vault.path().display().to_string(),
+            None,
             vec![],
             vec![],
         );
@@ -391,6 +407,7 @@ status: Done
         let vault = create_test_vault();
         let tracker = ObsidianTracker::new(
             vault.path().display().to_string(),
+            None,
             vec!["Todo".to_string()],
             vec!["Done".to_string()],
         );
@@ -406,7 +423,7 @@ status: Done
     #[test]
     fn test_issue_normalization() {
         let vault = create_test_vault();
-        let path = vault.path().join("TEST-1.md");
+        let path = vault.path().join("Issues").join("TEST-1.md");
         let issue = parse_obsidian_issue(&path).unwrap();
 
         assert_eq!(issue.id, "test-1");
