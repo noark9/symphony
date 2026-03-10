@@ -2,7 +2,7 @@
 
 Coding agent 编排服务 — Rust 实现。
 
-通过 Obsidian vault 跟踪 issue，自动分配 Gemini CLI agent 执行编码任务，并提供 HTTP API + React 仪表盘进行实时监控。
+通过 Obsidian vault 跟踪 issue，自动分配编码 agent（支持 Gemini CLI ACP / Claude Code / Gemini prompt 多种模式）执行编码任务，并提供 HTTP API + React 仪表盘进行实时监控。
 
 ## 系统概览
 
@@ -12,13 +12,14 @@ Coding agent 编排服务 — Rust 实现。
 │                                                          │
 │  ┌──────────┐    ┌─────────────┐    ┌────────────────┐  │
 │  │ Obsidian │───▶│ Orchestrator│───▶│  Agent Runner   │  │
-│  │ Tracker  │    │  (Poll Loop)│    │  (ACP / stdio)  │  │
+│  │ Tracker  │    │  (Poll Loop)│    │  (多协议支持)    │  │
 │  └──────────┘    └──────┬──────┘    └───────┬────────┘  │
 │                         │                    │           │
 │                  ┌──────▼──────┐    ┌───────▼────────┐  │
-│                  │  Workspace  │    │   Gemini CLI    │  │
-│                  │  Manager    │    │   (子进程)       │  │
-│                  └─────────────┘    └────────────────┘  │
+│                  │  Workspace  │    │  Gemini CLI     │  │
+│                  │  Manager    │    │  Claude Code    │  │
+│                  └─────────────┘    │  (子进程)       │  │
+│                                     └────────────────┘  │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │  Axum HTTP Server                                 │   │
@@ -28,13 +29,15 @@ Coding agent 编排服务 — Rust 实现。
 └─────────────────────────────────────────────────────────┘
 ```
 
-**工作流程**: 周期性轮询 Obsidian vault → 发现 active issue → 创建隔离 workspace → 渲染 Liquid prompt → 通过 ACP (JSON-RPC over stdio) 启动 Gemini CLI agent → 流式处理事件/token → 自动重试/回退 → 状态变更时清理。
+**工作流程**: 周期性轮询 Obsidian vault → 发现 active issue → 创建隔离 workspace → 渲染 Liquid prompt → 根据 `agent.kind` 选择协议（ACP JSON-RPC / prompt one-shot）启动 agent 子进程 → 流式处理事件/token → 自动重试/回退 → 状态变更时清理。
 
 ## 前置要求
 
 - [Rust](https://rustup.rs) (cargo, 1.75+)
 - [Node.js](https://nodejs.org) + npm（前端，可选）
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli)（Agent 执行，运行时需要）
+- Agent CLI（运行时需要，根据配置选择其一）：
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli)（ACP 模式或 prompt 模式）
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)（prompt 模式）
 
 ## 快速启动
 
@@ -90,16 +93,16 @@ rust/
 │
 ├── src/
 │   ├── main.rs             # 入口: CLI 解析 + 结构化 JSON 日志初始化
-│   ├── models.rs           # 核心领域模型
+│   ├── models.rs           # 核心领域模型 (含多 Agent 类型支持)
 │   ├── workflow.rs         # WORKFLOW.md 解析器
-│   ├── config.rs           # 类型化配置层
+│   ├── config.rs           # 类型化配置层 (含 agent runner 多协议解析)
 │   ├── prompt.rs           # Liquid 模板渲染
 │   ├── tracker/
 │   │   ├── mod.rs          # Tracker trait 定义
-│   │   └── obsidian.rs     # Obsidian vault 适配器
+│   │   └── obsidian.rs     # Obsidian vault 适配器 (支持 issues_dir)
 │   ├── workspace.rs        # 工作空间管理
 │   ├── acp.rs              # ACP 协议类型
-│   ├── agent_runner.rs     # Agent 会话管理
+│   ├── agent_runner.rs     # Agent 会话管理 (ACP + prompt 双协议)
 │   ├── orchestrator.rs     # 核心编排逻辑 ⭐
 │   └── server.rs           # HTTP API + Dashboard
 │
@@ -122,13 +125,30 @@ rust/
 | 类型 | 说明 |
 |------|------|
 | `Issue` | 从 Obsidian 解析的 issue，含 id/title/state/priority/labels/blocked_by |
+| `BlockerRef` | Blocker 引用，含 id/identifier/state |
 | `WorkflowDefinition` | WORKFLOW.md 解析结果：YAML config + prompt template |
 | `ServiceConfig` | 完整服务配置 (tracker/polling/workspace/hooks/agent/gemini/server) |
+| `AgentKind` | Agent 协议类型枚举：`GeminiAcp` / `ClaudePrompt` / `GeminiPrompt` |
+| `AgentConfig` | Agent 并发控制配置 (max_concurrent_agents / max_retry_backoff_ms / 按状态限制) |
+| `GeminiConfig` | Agent 运行配置 (kind/command/timeout/stall_timeout/log_agent_output) |
+| `TrackerConfig` | Tracker 配置，含 `issues_dir` 支持 vault 子目录扫描 |
+| `RunAttempt` | 单次执行尝试记录 (issue/attempt/workspace/status/error) |
+| `RunStatus` | 执行状态枚举 (PreparingWorkspace → StreamingTurn → Succeeded/Failed/Stalled...) |
+| `LiveSession` | 运行中会话的详细状态 (session/thread/turn/tokens/pid) |
 | `RunningEntry` | 运行中会话的状态快照 (tokens/pid/events/cancel_token) |
 | `RetryEntry` | 重试队列条目 (attempt/due_at/error) |
 | `GeminiTotals` | 全局 token 消耗统计 |
+| `OrchestratorState` | 编排器完整运行时状态 (running/claimed/retry/completed/totals) |
 
 辅助函数：`sanitize_workspace_key()` (路径安全清洗) 和 `normalize_state()` (状态归一化)。
+
+**Agent 类型 (`AgentKind`)**：
+
+| Kind | 命令 | 协议 | 说明 |
+|------|------|------|------|
+| `GeminiAcp` | `gemini --experimental-acp` | ACP (JSON-RPC over stdio) | 交互式多 turn，支持工具调用 |
+| `ClaudePrompt` | `claude` | Prompt one-shot (`-p`) | 非交互式，单次执行 |
+| `GeminiPrompt` | `gemini` | Prompt one-shot (`-p`) | 非交互式，单次执行 |
 
 ### `workflow.rs` — WORKFLOW.md 解析 (SPEC §5.1–§5.5)
 
@@ -139,8 +159,11 @@ rust/
 tracker:
   kind: obsidian
   vault_dir: /path/to/vault
+  issues_dir: Issues
 polling:
   interval_ms: 30000
+agent:
+  kind: gemini_acp
 ---
 你是一个编码 agent，正在处理 issue: {{ issue.title }}
 请在 workspace 中完成以下任务...
@@ -159,11 +182,29 @@ polling:
 | `~` 展开 | `root: ~/workspaces` → 绝对路径 |
 | 配置验证 | tracker.kind 必填、vault_dir 必填、command 非空 |
 | 逗号列表 | `active_states: "Todo, In Progress"` → 数组 |
+| `agent` 节 | 解析 `agent.kind` / `agent.command` / `agent.turn_timeout_ms` 等 |
+| `gemini` 节兼容 | 当 `agent` 节未配置时回退到 `gemini` 节 |
+| `log_agent_output` | 控制是否将 agent stdout/stderr 输出到后端控制台 |
+
+**`agent` 配置节**：
+
+```yaml
+agent:
+  kind: gemini_acp          # gemini_acp | claude_prompt | gemini_prompt
+  command: "gemini"          # 自定义命令 (可选，有默认值)
+  turn_timeout_ms: 1800000   # Turn 超时
+  read_timeout_ms: 300000    # 读取超时
+  stall_timeout_ms: -1       # Stall 检测 (<= 0 禁用)
+  log_agent_output: false    # 是否输出 agent 日志到控制台
+```
 
 ### `tracker/` — Issue 跟踪器 (SPEC §11)
 
 - **`mod.rs`**: `Tracker` trait — `fetch_candidate_issues()`, `fetch_issues_by_states()`, `fetch_issue_states_by_ids()`
-- **`obsidian.rs`**: Obsidian vault 适配器，扫描 `.md` 文件，解析 YAML frontmatter 中的 status/title/priority/labels/blocked_by
+- **`obsidian.rs`**: Obsidian vault 适配器
+  - 支持 `issues_dir` 配置，只扫描 vault 中指定子目录 (默认 `"Issues"`)
+  - 扫描 `.md` 文件，解析 YAML frontmatter 中的 status/title/priority/labels/blocked_by
+  - `update_config()` 支持动态重载时更新 vault/issues_dir/states 配置
 
 ### `workspace.rs` — 工作空间管理 (SPEC §9)
 
@@ -181,12 +222,22 @@ polling:
 
 ### `agent_runner.rs` — Agent 会话 (SPEC §10.7, §16.5)
 
-1. 通过 `bash -lc` 启动 Gemini CLI 子进程
+支持多种 Agent 协议，根据 `AgentKind` 自动分发：
+
+**ACP 协议会话** (`GeminiAcp`):
+1. 通过 `bash -lc` 启动 Agent CLI 子进程
 2. ACP 初始化握手 (`initialize` → `notifications/initialized`)
 3. 发送 prompt 作为 `tasks/send` turn
 4. 流式读取 stdout，处理 JSON-RPC 消息
 5. 支持工具调用 (`tools/call`) 代理
 6. Turn timeout / 取消 / 异常退出处理
+
+**Prompt 模式会话** (`ClaudePrompt` / `GeminiPrompt`):
+1. 通过 `bash -lc` 启动 `<command> -p "<prompt>"` 子进程
+2. 流式读取 stdout/stderr 直到进程退出
+3. 无 ACP 握手、无 JSON-RPC、无工具调用
+4. 支持 `log_agent_output` 控制日志输出
+5. 支持取消令牌和超时
 
 ### `prompt.rs` — 模板渲染 (SPEC §12)
 
@@ -200,6 +251,8 @@ Labels: {{ issue.labels | join: ", " }}
 ```
 
 变量自动注入：`issue` (Issue 完整对象)、`attempt` (重试次数)。
+
+内置 `build_continuation_prompt()` 支持多 turn 会话的 continuation 提示生成。
 
 ### `orchestrator.rs` — 核心编排 (SPEC §7, §8, §16) ⭐
 
@@ -234,7 +287,8 @@ Labels: {{ issue.labels | join: ", " }}
 - **Stall 检测**: 超过 `stall_timeout_ms` 无 ACP 活动则取消并重试
 - **动态重载**: 文件监听 WORKFLOW.md 变更，热重载配置 (保持运行中会话)
 - **启动清理**: 启动时清除 terminal 状态 issue 的 workspace
-- **Token 统计**: 累计 input/output/total tokens，支持活跃会话的实时秒数
+- **Token 统计**: 增量累计 input/output/total tokens，支持活跃会话的实时秒数
+- **重试机制**: 正常退出 → 1s continuation retry；异常退出 → 10s 基数指数退避 (上限 `max_retry_backoff_ms`)
 
 ### `server.rs` — HTTP 服务 (SPEC §13.7)
 
@@ -270,7 +324,7 @@ Vite + React + TypeScript SPA：
 | 异步运行时 | `tokio` | 全特性异步运行时 |
 | HTTP 服务 | `axum` + `tower-http` | 路由、中间件、静态文件服务 |
 | 序列化 | `serde` + `serde_json` + `serde_yaml` | JSON/YAML 序列化 |
-| 模板引擎 | `liquid` | Liquid 模板渲染 |
+| 模板引擎 | `liquid` + `liquid-core` | Liquid 模板渲染 |
 | 文件监听 | `notify` + `notify-debouncer-mini` | WORKFLOW.md 变更检测 |
 | CLI | `clap` | 命令行参数解析 |
 | 日志 | `tracing` + `tracing-subscriber` | 结构化 JSON 日志 |
@@ -300,7 +354,7 @@ cargo check
 # 完整构建
 cargo build
 
-# 运行测试 (22 个单元测试)
+# 运行测试 (26 个单元测试)
 cargo test
 
 # Lint 检查
@@ -316,14 +370,14 @@ cd frontend && npm run build
 ### 测试覆盖
 
 | 模块 | 测试数量 | 覆盖内容 |
-|------|---------|---------|
+|------|---------|---------| 
 | `models` | 2 | workspace key 清洗、状态归一化 |
 | `workflow` | 4 | front matter 解析、空/无效 front matter |
-| `config` | 5 | 配置解析、默认值、验证、逗号列表 |
+| `config` | 9 | 配置解析、默认值、验证、逗号列表、claude/gemini prompt agent 配置、agent 节回退 gemini 节 |
 | `prompt` | 4 | 模板渲染、attempt 参数、空模板默认值、continuation |
-| `tracker/obsidian` | 5 | 候选 issue 扫描、按状态查询、ID 查询、字段解析 |
+| `tracker/obsidian` | 5 | 候选 issue 扫描、按状态查询、空状态、ID 查询、字段归一化 |
 | `orchestrator` | 2 | 退避计算、调度排序 |
-| **合计** | **22** | |
+| **合计** | **26** | |
 
 ### 日志
 
@@ -360,6 +414,7 @@ RUST_LOG=symphony::orchestrator=debug,symphony::tracker=info cargo run -- WORKFL
 | §9.4 | 生命周期 Hooks | ✅ |
 | §10 | ACP (JSON-RPC over stdio) | ✅ |
 | §10.5 | Tool 调用代理 | ✅ |
+| §10.7 | 多 Agent 协议 (ACP + Prompt) | ✅ |
 | §11 | Obsidian Tracker 适配器 | ✅ |
 | §12 | Prompt 模板 (Liquid) | ✅ |
 | §13.1 | 结构化 JSON 日志 | ✅ |

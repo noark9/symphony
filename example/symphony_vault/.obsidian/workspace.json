@@ -13,8 +13,8 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "TODO-001-初始化 React Todo App 项目.md",
-                "mode": "preview",
+                "file": "Issues/TODO-001-初始化 React Todo App 项目.md",
+                "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
@@ -181,5 +181,10 @@
     }
   },
   "active": "20fa00d95055da25",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "Dashboard.md",
+    "Issues/TODO-001-初始化 React Todo App 项目.md",
+    "Issues",
+    "TODO-001-初始化 React Todo App 项目.md"
+  ]
 }
